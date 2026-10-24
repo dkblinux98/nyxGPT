@@ -60,3 +60,56 @@ describe('ModelsPage resource hint UI', () => {
     expect(screen.getByText(/enough free memory/)).toBeInTheDocument();
   });
 });
+
+// The same two branches the admin page carries (#4150, covered in
+// web/tests/app/admin.test.tsx): "Ollama answered and holds nothing" is a
+// different fault from "Ollama is not running", and `detail` is the only place
+// the required-model command is named. Both screens give the same advice or
+// neither does -- so both are tested, and both were uncovered at 99.38%
+// (#4209) because every fixture here sent `{ models: [] }` with no `detail`.
+describe('ModelsPage empty-list detail (#4150)', () => {
+  const DETAIL =
+    'Ollama is reachable but holds no models. Run `nyxgpt ops required-models`.';
+
+  function answerModels(body: Record<string, unknown>) {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => body,
+    }) as unknown as typeof fetch;
+  }
+
+  it("renders the api's detail beside the empty-list message", async () => {
+    answerModels({ models: [], detail: DETAIL });
+
+    render(<ModelsPage />);
+
+    expect(
+      await screen.findByText(/No models found\. Pull a model to get started\./)
+    ).toBeInTheDocument();
+    expect(screen.getByText(new RegExp('nyxgpt ops required-models'))).toBeInTheDocument();
+  });
+
+  it('says only the generic message when the api sends no detail', async () => {
+    answerModels({ models: [] });
+
+    render(<ModelsPage />);
+
+    expect(
+      await screen.findByText(/No models found\. Pull a model to get started\./)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp('required-models'))).not.toBeInTheDocument();
+  });
+
+  it('ignores a non-string detail rather than rendering it', async () => {
+    // `{detail}` in JSX with a dict is a React render crash; the component
+    // tests the type, so the type has to be tested.
+    answerModels({ models: [], detail: { code: 'empty' } });
+
+    render(<ModelsPage />);
+
+    expect(
+      await screen.findByText(/No models found\. Pull a model to get started\./)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/code/)).not.toBeInTheDocument();
+  });
+});

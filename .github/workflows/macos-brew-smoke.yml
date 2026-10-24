@@ -169,6 +169,10 @@ on:
       # `ops.py`'s ~214, so this is not the every-PR cost that keeps `ops.py`
       # out.
       - 'src/nyxgpt/self_heal.py'
+      # The Linux `restart-wait` job's own test (#4192). It extracts the
+      # restart step's shell out of this file, so it has to re-run when either
+      # side moves.
+      - 'tests/unit/test_macos_restart_wait.py'
       # The web tier's own version, derived from the directory the keg's
       # wrapper `cd`s into (#3982). This is a claim about a Homebrew keg on
       # macOS, so it is asserted here rather than only in vitest -- a unit
@@ -224,6 +228,46 @@ permissions:
   contents: read
 
 jobs:
+  restart-wait:
+    name: The restart steps wait for the restart instead of sampling it
+    # #4192, and the reason it is an `ubuntu-latest` job inside a macOS
+    # workflow. `keg-install`'s "The api restarts itself when the UI asks it
+    # to (#4043)" step failed on 9 of its last 10 PR runs, and not because
+    # #4043 regressed: it read the api's pid one second after an endpoint that
+    # answers `{"status":"scheduled"}` by design, so `up` returned against a
+    # process that had not been replaced yet. The step was measuring a restart
+    # that had not happened and reporting it as one that did not happen.
+    #
+    # That logic is workflow YAML, and the only thing that ever executed it
+    # was a macOS runner on an ADVISORY job -- so the race was invisible to
+    # every gate on the tree until it had been red for ten days on the release
+    # branch. This job runs the step's real shell, extracted from this file and
+    # never re-typed, against a stub `launchctl` whose pid changes on a delay:
+    # the shipped wait must return the successor, and the retired form must
+    # still read the pre-restart pid (a check that cannot fail proves nothing,
+    # #3753). Linux, ~40 seconds, path-filtered like everything else here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `--noconftest` so this costs a two-package install rather than the
+      # whole editable package: the test drives bash and reads YAML, and the
+      # root `tests/conftest.py` would pull in psutil and `nyxgpt.config` at
+      # collection time. Same trade as escalation-headline-smoke.yml.
+      - name: Install dependencies
+        run: python -m pip install --quiet pytest pyyaml
+
+      - name: The wait, executed in both directions
+        run: |
+          python -m pytest -q -p no:cacheprovider --noconftest \
+            --no-header --rootdir . -c /dev/null \
+            tests/unit/test_macos_restart_wait.py
+
   keg-install:
     name: Install the working tree's formulas
     # PRs and dispatch build from the checkout. An rc cut calls this workflow
@@ -234,6 +278,23 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || inputs.run_keg_install }}
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # ONE copy of "is the web keg on this machine", read by the step that
+      # installs it and by every step that asserts about it (#4192 review
+      # round 2, reviewer-found). It was two: the install is gated
+      # `inputs.include_web || pull_request`, while the wrapper assertion
+      # below iterated BOTH formulas unconditionally -- so a
+      # `workflow_dispatch` with the default `include_web=false` failed
+      # deterministically on a keg it had deliberately not installed (run
+      # 38071500460). A gate that goes red for how it was invoked says nothing
+      # about the head, which is this issue's whole class -- and dispatch is
+      # how this advisory job gets re-run, so it has to be usable.
+      #
+      # Derived from the inputs, deliberately not probed from the machine:
+      # asking `brew list` whether the keg is there would quietly narrow the
+      # assertion on any run where the install should have happened and did
+      # not.
+      WEB_KEG_INSTALLED: ${{ inputs.include_web || github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -268,7 +329,7 @@ jobs:
           if [ "$upgrade_rc" -ne 0 ]; then
             # "already installed" is the one non-zero worth tolerating on its
             # wording: it means current is what is already here.
-            if printf '%s' "$upgrade_log" | grep -qF "already installed"; then
+            if grep -qF "already installed" <<<"$upgrade_log"; then
               echo "python@3.12 is already at the newest version Homebrew knows about"
             # Otherwise tolerate it only on the OUTCOME this step is about:
             # python@3.12 is at the newest version Homebrew knows and runs.
@@ -416,7 +477,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/broken" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-broken" pip
-            broken_wheel="$(ls "$WORK"/wheelhouse-broken/pip-*.whl | head -1)"
+            broken_wheel="$(ls "$WORK"/wheelhouse-broken/pip-*.whl | sed -n '1p')"
             PYTHONPATH="$WORK/broken" "$WORK/venv-broken/bin/python" "$broken_wheel/pip" \
               install --no-index --disable-pip-version-check "$broken_wheel"
           ) > "$WORK/broken.log" 2>&1
@@ -445,7 +506,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/fixed" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-fixed" pip
-            fixed_wheel="$(ls "$WORK"/wheelhouse-fixed/pip-*.whl | head -1)"
+            fixed_wheel="$(ls "$WORK"/wheelhouse-fixed/pip-*.whl | sed -n '1p')"
             # The bootstrap's second interpreter is the venv's, running pip
             # out of the wheel by zipimport -- a green run here also proves
             # the shim reaches that process, the env-inheritance property the
@@ -606,7 +667,7 @@ jobs:
           # and it never reaches the module that is missing.
           "$PY" -m pip download --no-deps --only-binary :all: \
             --disable-pip-version-check --dest "$WORK/wheelhouse" pip
-          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | sed -n '1p')"
           "$WORK/venv-new/bin/python" "$WHEEL/pip" install --no-index \
             --disable-pip-version-check "$WHEEL"
           "$WORK/venv-new/bin/pip" --version
@@ -825,7 +886,7 @@ jobs:
           # shellcheck disable=SC2086  # the flag list is read out of the formula
           PYTHONPATH="$WORK/sabotage" "$PY" -m pip download --no-deps --only-binary :all: \
             --disable-pip-version-check $DOWNLOAD_FLAGS --dest "$WORK/wheelhouse" pip
-          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | head -1)"
+          WHEEL="$(ls "$WORK"/wheelhouse/pip-*.whl | sed -n '1p')"
           echo "downloaded: $WHEEL"
 
           # The venv is populated exactly as the recipe does it -- offline,
@@ -902,9 +963,8 @@ jobs:
           # channel. Checked here, on the tarball this runner just built, so
           # a stamping regression is named at the build rather than three
           # steps later as a confusing version mismatch.
-          DECLARED="$(tar -xzOf "dist/homebrew/dist/nyxgpt-api-${SMOKE_VERSION}.tar.gz" \
-            "nyxgpt-api-${SMOKE_VERSION}/pyproject.toml" \
-            | awk -F'"' '/^version =/{print $2; exit}')"
+          DECLARED="$(scripts/tarball_declared_version.sh \
+            "dist/homebrew/dist/nyxgpt-api-${SMOKE_VERSION}.tar.gz")"
           echo "the vendored pyproject.toml declares: ${DECLARED}"
           test "$DECLARED" = "$SMOKE_VERSION" || {
             echo "::error::the ${SMOKE_VERSION} tarball declares ${DECLARED}"
@@ -1058,7 +1118,7 @@ jobs:
             set -e
             PYTHONPATH="$WORK/rc12-shim" "$PY" -m pip download --no-deps --only-binary :all: \
               --disable-pip-version-check --dest "$WORK/wheelhouse-mask" pip
-            mask_wheel="$(ls "$WORK"/wheelhouse-mask/pip-*.whl | head -1)"
+            mask_wheel="$(ls "$WORK"/wheelhouse-mask/pip-*.whl | sed -n '1p')"
             PYTHONPATH="$WORK/rc12-shim" "$WORK/venv-mask/bin/python" "$mask_wheel/pip" \
               install --no-index --disable-pip-version-check "$mask_wheel"
           ) > "$WORK/mask.log" 2>&1
@@ -1418,7 +1478,7 @@ jobs:
         # layout that nothing on macOS ever ran. The cost is a real `npm ci` +
         # `next build`, which is why it is bought only on the narrow packaging
         # path filter above and not on a hot file.
-        if: ${{ inputs.include_web || github.event_name == 'pull_request' }}
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
         run: |
           set -euo pipefail
           brew install --verbose nyxgpt/brew-smoke/nyxgpt-web@3.0.0rc 2>&1 \
@@ -1458,7 +1518,7 @@ jobs:
         #     deliberately one nothing in this tree reports (`9.9.9`), so the
         #     assertion cannot pass by reading the API's number for the web
         #     tier's -- which is the exact bug (#3982).
-        if: ${{ inputs.include_web || github.event_name == 'pull_request' }}
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
         run: |
           set -euo pipefail
 
@@ -1581,7 +1641,12 @@ jobs:
         # `NYXGPT_NODE_BIN`, must be REPORTED by `ops doctor` and `ops node`.
         # A pin nothing checks is how this went unnoticed for the life of the
         # project, so both the pinning and the detection are executed here.
-        if: ${{ inputs.include_web || github.event_name == 'pull_request' }}
+        #
+        # Gated on the job's `WEB_KEG_INSTALLED`, not on a restatement of
+        # `inputs.include_web`: that condition lives once (#4192 review round
+        # 2, ledger D-066), and a second copy here is the divergence the flag
+        # was introduced to remove.
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
         run: |
           set -euo pipefail
 
@@ -1650,7 +1715,12 @@ jobs:
           # The wrapper logs the `node` it resolved (#4194); that line IS the
           # evidence this step exists to produce, so it is printed above and
           # asserted here.
-          RESOLVED="$(sed -n 's/^  node: //p' "$RUNNER_TEMP/web-node.log" | head -1)"
+          # No pipe into an early-leaving reader: `sed | head -1` is the
+          # `pipefail`/EPIPE hazard #4192 swept out of this workflow, and
+          # `tests/unit/test_sigpipe_pipeline_guard.py` fails the build on it.
+          # `sed` reads the file directly and the shell takes the first line.
+          RESOLVED="$(sed -n 's/^  node: //p' "$RUNNER_TEMP/web-node.log")"
+          RESOLVED="${RESOLVED%%$'\n'*}"
           echo "the service resolved: ${RESOLVED:-<nothing>}"
           fail=0
           if [ "$code" != "200" ]; then
@@ -1719,7 +1789,20 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for formula in nyxgpt-api@3.0.0rc nyxgpt-web@3.0.0rc; do
+          # Only the kegs this run installed. Reading the job's one
+          # `WEB_KEG_INSTALLED` rather than restating the condition: this step
+          # used to iterate both unconditionally, so a dispatch with
+          # `include_web=false` went red on a keg it had deliberately skipped
+          # (#4192, run 38071500460). Which kegs are expected is still decided
+          # by the inputs, never by probing the machine.
+          formulas=(nyxgpt-api@3.0.0rc)
+          if [ "${WEB_KEG_INSTALLED:-false}" = "true" ]; then
+            formulas+=(nyxgpt-web@3.0.0rc)
+          else
+            echo "note: nyxgpt-web was not installed on this run" \
+              "(include_web=false), so only the api wrapper is asserted"
+          fi
+          for formula in "${formulas[@]}"; do
             wrapper="$(brew --prefix "$formula")/bin/${formula%@*}"
             echo "=== $wrapper ==="
             if [ ! -f "$wrapper" ]; then
@@ -1747,7 +1830,7 @@ jobs:
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
-          echo "good: both wrappers start with a shebang and carry the exec bit"
+          echo "good: ${#formulas[@]} wrapper(s) start with a shebang and carry the exec bit"
 
       - name: "A Homebrew post-install soft failure is not an install failure (#3861)"
         # The owner's 2026-08-21 acceptance run: `nyxgpt up` reported `native
@@ -1828,7 +1911,7 @@ jobs:
           SRC_VENV="$KEG/libexec/venv"
           [ -n "$KEG" ] || { echo "::error::brew --prefix ${FORMULA} returned nothing"; exit 1; }
           [ -x "$SRC_VENV/bin/python3" ] || {
-            echo "--- ${SRC_VENV}/bin ---"; ls -l "$SRC_VENV/bin" 2>&1 | head -20
+            echo "--- ${SRC_VENV}/bin ---"; ls -l "$SRC_VENV/bin" 2>&1 | sed -n '1,20p'
             echo "::error::the keg has no runnable interpreter at ${SRC_VENV}/bin/python3"
             exit 1; }
 
@@ -2124,6 +2207,46 @@ jobs:
             done
             return 1
           }
+          # WAIT FOR THE RESTART BEFORE MEASURING IT (#4192).
+          #
+          # `POST /infra/restart-required` answers 200 the moment it has
+          # *scheduled* the work: `app.infra_restart_required` defers
+          # `_do_restart_required` onto a `threading.Timer(0.5, ...)` so the
+          # triggering response can be sent before the process handling it is
+          # killed, and it says so -- `{"status":"scheduled"}`, not `running`.
+          # `launchctl kickstart -k` is one more hop after that: launchd kills
+          # the instance and starts a new one on its own schedule.
+          #
+          # So at the moment the POST returns, the OLD process is still
+          # answering `/health`. `up` therefore returns INSTANTLY and every
+          # reading after it is of the pre-restart machine. That is what
+          # failed this step on 9 of its last 10 PR runs -- `pid=23672 (was
+          # 23672)` with `attempts.api.status == "running"` one second after
+          # the request (runs 37999255152, 37997409193, 37984308744,
+          # 37984169057, 37982404176). The step was measuring a restart that
+          # had not happened YET, and reporting it as one that did not happen.
+          # Half one below never hit it because its `down 60` happens to wait.
+          #
+          # The wait is on the PID CHANGING, not on `down`: `kickstart -k` can
+          # replace the process inside one poll interval, so a `down` probe is
+          # allowed to miss the gap entirely and would reintroduce the same
+          # flake inverted. A new pid under the same launchd label is also the
+          # actual claim -- it is the one reading an api that merely never
+          # restarted cannot produce -- so making it the WAIT CONDITION rather
+          # than an assertion after a blind sleep is what removes the race
+          # instead of widening it.
+          restarted() {  # restarted <old-pid> <seconds> -- echoes the new pid
+            local old="$1" deadline=$(( SECONDS + $2 )) now
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              now="$(api_pid || true)"
+              if [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$old" ]; then
+                printf '%s' "$now"
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
           down() {  # down <seconds> -- has the api stopped answering?
             local deadline=$(( SECONDS + $1 ))
             while [ "$SECONDS" -lt "$deadline" ]; do
@@ -2206,9 +2329,23 @@ jobs:
           # The running api already imported the module, so it has to be
           # replaced by a process that is NOT inside the job (this shell is a
           # child of the runner, which is the whole difference being measured).
+          #
+          # Waited on the pid, for the same reason half two is (#4192) and with
+          # a sharper consequence here: `up` returns while the OLD process --
+          # the one still holding the SHIPPED module in memory -- is answering,
+          # so half one could post its restart request to a process that still
+          # carries the hand-off the injection just removed. It would then come
+          # back cleanly, and the step reads "the api came back on the PRE-FIX
+          # keg" as "this runner does not reproduce #4043" and fails. The
+          # injection is only in force once a NEW process has read it.
+          PID_PRE_INJECT="$(api_pid)"
           brew services restart "$SPEC" 2>&1 | tail -5
-          up 180 || { echo "::error::the api did not come back after the injection"; err_log; exit 1; }
-          PID_BEFORE="$(api_pid)"
+          if ! PID_BEFORE="$(restarted "$PID_PRE_INJECT" 180)"; then
+            echo "::error::the api did not come back after the injection (pid still"
+            echo "::error::${PID_PRE_INJECT}), so nothing below is running the reverted module"
+            err_log; exit 1
+          fi
+          up 180 || { echo "::error::the api did not answer after the injection"; err_log; exit 1; }
           pend
           echo "pre-fix api pid=$PID_BEFORE state=$(brew_state)"
           CODE="$(curl -s -o "$RUNNER_TEMP/pre.json" -w '%{http_code}' --max-time 20 \
@@ -2268,15 +2405,31 @@ jobs:
             echo "::error::the endpoint did not accept the restart request (got $CODE)"
             err_log; exit 1
           }
-          # AC1: the api answers again, with no CLI intervention. Nothing
-          # between here and the assertion runs a `nyxgpt ops` or `brew`
-          # command -- that is the point.
+          # AC1: the api restarts and answers again, with no CLI intervention.
+          # Nothing between here and the assertions runs a `nyxgpt ops` or
+          # `brew` command -- that is the point.
+          #
+          # `restarted` is the wait AND the first assertion, deliberately (see
+          # its definition): a restart is a NEW PID under the same launchd
+          # label, and an api that merely never went down cannot produce one.
+          # The retired form of these four lines was `up 180` followed by
+          # `api_pid`, which read the machine one second after a restart the
+          # endpoint had only just scheduled -- the flake #4192 was filed for.
+          if ! PID_AFTER="$(restarted "$PID_BEFORE" 180)"; then
+            echo "::error::the api did not restart within 180s of accepting the request"
+            echo "::error::(pid still ${PID_BEFORE}) -- #4043 is NOT fixed"
+            err_log
+            exit 1
+          fi
+          # ...and the successor serves, rather than merely existing. `up`
+          # means something here, where it meant nothing before the wait: the
+          # old process is gone by now, so this is the new one answering.
           up 180 || {
-            echo "::error::the api did not answer again after the restart it was asked for -- #4043 is NOT fixed"
+            echo "::error::the api restarted (pid $PID_BEFORE -> $PID_AFTER) but the"
+            echo "::error::successor never answered $API/health"
             err_log
             exit 1
           }
-          PID_AFTER="$(api_pid)"
           STATE_AFTER="$(brew_state)"
           JOB_AFTER=unloaded
           if job_loaded; then JOB_AFTER=loaded; fi
@@ -2284,13 +2437,6 @@ jobs:
                "plist file=$(plist_path || echo absent)"
           err_log
           fail=0
-          # A restart, not a survival: an api that merely never went down
-          # would answer /health throughout and prove nothing.
-          if [ -z "$PID_AFTER" ] || [ "$PID_AFTER" = "$PID_BEFORE" ]; then
-            echo "::error::the api's pid did not change ($PID_BEFORE -> ${PID_AFTER:-<none>})"
-            echo "::error::-- it answered without having restarted"
-            fail=1
-          fi
           # AC3: brew reports it started and launchd holds the job.
           if [ "$STATE_AFTER" = none ] || [ "$STATE_AFTER" = "<absent>" ]; then
             echo "::error::brew reports $KEG_NAME as '$STATE_AFTER' after the restart"
@@ -2308,6 +2454,13 @@ jobs:
           # `attempts` must not carry a failure for `api` either: a refusal
           # and a success were indistinguishable before #4043's first round,
           # and a stale `failed` here would be the same defect inverted.
+          #
+          # One read, not a poll, and that is sound BECAUSE of the wait above:
+          # `clear_started` is called from the api's lifespan *startup*, which
+          # uvicorn completes before it accepts a connection -- so an api that
+          # has answered `/health` has already retired what it was entitled to
+          # retire. Reading it before the restart landed is what made this an
+          # unbounded race (#4192); reading it after is a fact.
           curl -fsS --max-time 10 "$API/api/v1/infra/restart-status" > "$RUNNER_TEMP/status.json"
           cat "$RUNNER_TEMP/status.json"; echo
           "$PY" - "$RUNNER_TEMP/status.json" <<'PY' || fail=1
@@ -2390,7 +2543,16 @@ jobs:
           PLIST
             launchctl bootstrap "gui/$(id -u)" "$LA/$1.plist" 2>/dev/null || true
           }
-          loaded() { launchctl list 2>/dev/null | grep -q "$1"; }
+          # `launchctl list | grep -q` would answer "not loaded" whenever
+          # launchctl loses the race to grep's early exit (#4192): the skip
+          # below would fire spuriously, and the assertion after the stop would
+          # PASS on a service that survived. A builtin fed from memory cannot
+          # lose that race.
+          loaded() {
+            local listing
+            listing="$(launchctl list 2>/dev/null || true)"
+            grep -q "$1" <<<"$listing"
+          }
 
           echo "=== inject both log followers ==="
           inject com.nyxgpt.cassandra-logs
@@ -2608,16 +2770,15 @@ jobs:
           # checkout to work around it; the workaround is retired with the
           # defect it worked around, and what is checked here now is the
           # builder's own stamp on the two tarballs this runner just built.
-          # `awk` printing nothing fails the comparison, so a tarball with no
-          # version line cannot pass this quietly.
-          declared_version() {
-            tar -xzOf "$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
-              | awk -F'"' '/^version =/{print $2; exit}'
-          }
+          # The reader is `scripts/tarball_declared_version.sh` -- one source
+          # for this decision across all three steps that ask it (#4183,
+          # D-066), and it refuses a tarball with no version line rather than
+          # comparing against an empty string.
           for want in 3.0.0:dist/stable 3.0.0rc0:dist/rc; do
             VERSION="${want%%:*}"
             DIR="${want##*:}"
-            DECLARED="$(declared_version "$DIR" "$VERSION")"
+            DECLARED="$(scripts/tarball_declared_version.sh \
+              "$DIR/dist/nyxgpt-api-$VERSION.tar.gz")"
             echo "${DIR}: the vendored pyproject.toml declares '${DECLARED}'"
             test "$DECLARED" = "$VERSION" || {
               echo "a keg built from this tarball would report '${DECLARED}',"
@@ -2766,10 +2927,21 @@ jobs:
           echo "driver: $PY"
 
           echo "=== what brew itself registers for the candidate ==="
-          brew services list
+          # Captured once and matched by a builtin, deliberately: the earlier
+          # `brew services list | grep -q "$KEG"` reported its own SUCCESS as a
+          # failure. `grep -q` leaves on the first match, brew's next write
+          # then takes EPIPE ("Broken pipe @ rb_sys_fail_on_write"), and
+          # `pipefail` makes the pipeline non-zero -- so the non-vacuity check
+          # below fired "measuring nothing" with the name right there in the
+          # log (run 38071858945). The same head passed at 38070775763: it is a
+          # race on whether brew still has a write pending, which is why the
+          # red said nothing about the commit. #4192, guarded for the whole
+          # tree by scripts/agents/lib/sigpipe_pipeline_guard.py.
+          SERVICES="$(brew services list)"
+          printf '%s\n' "$SERVICES"
           # Non-vacuity: if brew does not list the versioned name, the product
           # never resolves to it and neither half below is about anything.
-          brew services list | grep -q "$KEG" || {
+          grep -q "$KEG" <<<"$SERVICES" || {
             echo "::error::brew does not register a service for $KEG -- nothing here resolves to a versioned name, so this step is measuring nothing"
             exit 1
           }
@@ -3646,12 +3818,13 @@ jobs:
           # that metadata (#3850). Two tarballs declaring one version would
           # make both kegs report the same build and the comparison would be
           # measuring nothing.
-          declared() {
-            tar -xzOf "dist/$1/dist/nyxgpt-api-$2.tar.gz" "nyxgpt-api-$2/pyproject.toml" \
-              | awk -F'"' '/^version =/{print $2; exit}'
-          }
-          RC0="$(declared rc0 3.0.0rc0)"
-          RC1="$(declared rc1 3.0.0rc1)"
+          # Same one source as the other two steps that ask this (#4183,
+          # D-066): `scripts/tarball_declared_version.sh`. The copy that used
+          # to live here is what reddened this job on run 39679850952 --
+          # `awk ... exit` closed the pipe with the member half-written, tar
+          # took EPIPE, and `pipefail` failed the step on the right answer.
+          RC0="$(scripts/tarball_declared_version.sh dist/rc0/dist/nyxgpt-api-3.0.0rc0.tar.gz)"
+          RC1="$(scripts/tarball_declared_version.sh dist/rc1/dist/nyxgpt-api-3.0.0rc1.tar.gz)"
           echo "rc0 declares '${RC0}' / rc1 declares '${RC1}'"
           test "$RC0" = "3.0.0rc0" && test "$RC1" = "3.0.0rc1" || {
             echo "::error::the stamped versions are wrong (#3850), so the two kegs are not two builds"
@@ -3959,7 +4132,7 @@ jobs:
           set -euo pipefail
           OUT="$(nyxgpt ops required-models 2>&1)"
           echo "$OUT"
-          echo "$OUT" | grep -qi "already installed" \
+          grep -qi "already installed" <<<"$OUT" \
             || { echo "a re-run did not report the models as already present" >&2; exit 1; }
 
       # Enabled at boot, not just running now. A service started in the wrong

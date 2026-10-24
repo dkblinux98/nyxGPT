@@ -485,6 +485,14 @@ class NyxgptApi < Formula
     # the backend is seeded into the venv first and the child is never
     # spawned. It is also why a vendored wheelhouse would not have produced
     # an offline install: build isolation still fetches backends.
+    # nyxGPT's one remote-fetch policy (#4205), as environment rather than
+    # flags for exactly the reason the paragraph above gives: the build
+    # backend's child pip inherits no flag from its parent, but it does
+    # inherit `PIP_*`. Numbers from src/nyxgpt/build_fetch_policy.py;
+    # tests/unit/test_build_fetch_policy.py fails the build if they drift.
+    ENV["PIP_RETRIES"] = "5"
+    ENV["PIP_TIMEOUT"] = "30"
+
     wheelhouse = buildpath/"pip-bootstrap"
     system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
            "--disable-pip-version-check", "--use-deprecated=legacy-certs",

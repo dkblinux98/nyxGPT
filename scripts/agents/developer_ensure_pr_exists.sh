@@ -306,7 +306,7 @@ esac
 
 # No PR. Either the branch carries nothing of its own (delete it) or it
 # carries work that must not be lost (open a draft PR for it).
-if classify_mergeable "$BRANCH" "$ISSUE" "$BASE_BRANCH" | grep -qx -e merged -e superseded; then
+if classify_mergeable "$BRANCH" "$ISSUE" "$BASE_BRANCH" | grep -x -e merged -e superseded >/dev/null; then
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] would delete ${BRANCH} — content provably on ${BASE_BRANCH}" >&2
     exit 0
@@ -394,7 +394,7 @@ pr_number="${pr_url##*/}"
 
 # Best-effort hygiene only. The issue's single label keeps the PR consistent
 # with the one-label invariant; nothing here may fail the run.
-label="$(real_label_names "$(echo "$issue_json" | jq -c '.labels // []')" | head -1)"
+label="$(real_label_names "$(echo "$issue_json" | jq -c '.labels // []')" | sed -n '1p')"
 if [[ -n "$label" ]]; then
   gh pr edit "$pr_number" --repo "$REPO" --add-label "$label" >/dev/null 2>&1 \
     || _warn "Could not copy label '${label}' to the rescue PR."

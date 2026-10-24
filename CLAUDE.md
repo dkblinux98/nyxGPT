@@ -410,11 +410,21 @@ diagnose the real error rather than assuming a permissions wall.
 **Reading code-scanning state without owner help:** dispatch
 `.github/workflows/code_scan_report.yml` (workflow_dispatch, optional `ref`
 input) and read its run log — it prints recent analyses, the open-alert
-list with `TOTAL_OPEN`, and every SARIF codeFlow per open alert. Agent
-sessions cannot call the code-scanning API directly; this is the supported
-path. Note: CodeQL default setup only scans the repo's default branch (plus
-PRs) — a non-default branch's alert list is frozen until it becomes default
-again and receives a push.
+list with `TOTAL_OPEN`, and every SARIF codeFlow per open alert, and its run
+URL is what the review gate asks to be cited. The agent PAT these workflows
+carry holds `repo`, so `/code-scanning/alerts` and the
+`application/sarif+json` analysis read **do** work directly (verified
+2026-10-24, #4222, ledger **S-011**) — use the direct read to answer a
+question, the dispatch when a run has to be cited. Note: CodeQL default setup
+only scans the repo's default branch (plus PRs) — a non-default branch's alert
+list is frozen until it becomes default again and receives a push.
+
+**Adjudicating a code-scanning alert:** an accepted finding is recorded in
+`security/codeql-adjudications.yml`, keyed to the flow, and
+`.github/workflows/codeql_adjudications.yml` performs the dismissal on the
+`code_scanning_alert` event. Never dismiss an alert by hand: that state is
+keyed to the sink's line number, so the next edit that moves the sink
+re-raises the identical accepted finding (ledger **D-080**).
 
 **Labels are the owner's, and nothing in automation writes the label
 registry (owner decision 2026-10-03, #4134).** No workflow or script may run
@@ -617,8 +627,9 @@ markers.**
   **retired**. Nothing writes it. It is still *read* as a documented fallback
   for issues filed before this decision, and
   `promote_accepted_features.sh` heals any such link into a real native edge
-  on its next sweep, so historical data converges instead of needing a
-  separate backfill.
+  on its next run, so historical data converges instead of needing a
+  separate backfill. That run is dispatched by whoever last changed a lane,
+  not a cron (#4201, ledger D-070).
 - Consumers: `promote_accepted_features.sh` (transitive promotion gate),
   `_issue_open_gate_refs` / `parked_resume.py` (auto-resume gating), and the
   retrospective (`scripts/retrospective/dump_relationships.py` →

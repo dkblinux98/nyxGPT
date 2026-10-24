@@ -20,6 +20,7 @@ Two defects are being locked down here, and they are not the same defect:
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 
 import pytest
@@ -336,3 +337,142 @@ def test_ops_node_reverifies_by_resolving_again_not_by_the_installer_exit_code(m
 
     assert ops.node(object()) == 1
     assert "still not on the declared Node" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# `ops install` reconciles Node -- it does not merely refuse (#4194, round 3)
+# ---------------------------------------------------------------------------
+#
+# Found by the class sweep over `_node_toolchain_gate`'s call sites. FOUR
+# install steps gate on the declared Node (web deps, mcp deps, and both native
+# web installs), and nothing in `install` put it there. On a machine with a
+# checkout that is a nuisance; on the machine the repo-less requirement
+# actually targets -- a clean host, no checkout, whatever `node` its image
+# shipped -- it is an install that cannot complete, and
+# `release-artifacts.yml`'s `artifact-install-smoke` job is exactly that
+# machine: `pip install nyxgpt` then `nyxgpt ops install`, with no Node step
+# anywhere and no `.nvmrc` to read.
+
+
+def test_install_reconciles_node_before_the_steps_that_gate_on_it():
+    """The step exists, and it runs before every step that would refuse."""
+    from nyxgpt import ops
+
+    source = inspect.getsource(ops.install)
+    assert '("node runtime", _ensure_declared_node)' in source, (
+        "`ops install` has no step that puts the declared Node on the host, so the "
+        "four steps that gate on it would fail on a clean machine"
+    )
+    node_at = source.index('("node runtime"')
+    for gated in ('("web deps"', '("mcp deps"', '("native web service"'):
+        assert source.index(gated) > node_at, (
+            f"{gated} runs before the node runtime step, so it would gate on a Node "
+            "the install had not yet put there"
+        )
+
+
+def test_the_reconciler_is_shared_with_the_cli_remedy():
+    """One source for "what does this host need doing about Node" (D-066).
+
+    `ops node` is the command every other surface points at; `install`'s step
+    is the same decision made at install time. Two implementations is how the
+    gate and the remedy would come to disagree about one machine.
+    """
+    from nyxgpt import ops
+
+    assert "_ensure_declared_node()" in inspect.getsource(ops.node)
+
+
+def test_the_reconciler_installs_nothing_on_a_correct_host(monkeypatch):
+    from nyxgpt import ops
+
+    monkeypatch.delenv(node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        ops.node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(
+            node_runtime.NODE_OK,
+            path="/usr/bin/node",
+            version=f"v{node_runtime.NODE_MAJOR}.0.0",
+            major=node_runtime.NODE_MAJOR,
+        ),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_install_declared_node",
+        lambda: (_ for _ in ()).throw(AssertionError("installed on a correct host")),
+    )
+
+    results = ops._ensure_declared_node()
+    assert [r.ok for r in results] == [True]
+
+
+def test_the_reconciler_installs_on_a_wrong_host_and_reverifies(monkeypatch):
+    """It installs, then asks the resolver again -- both halves asserted.
+
+    The verdict may not be the installer's exit code: `brew install node@NN`
+    of a keg-only formula succeeds while changing nothing a resolver would see.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.delenv(node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    states = iter(
+        [
+            _report(node_runtime.NODE_MISSING, path="", version="", major=None),
+            _report(
+                node_runtime.NODE_OK,
+                path="/usr/bin/node",
+                version=f"v{node_runtime.NODE_MAJOR}.1.0",
+                major=node_runtime.NODE_MAJOR,
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        ops.node_runtime, "node_version_report", lambda *, timeout=15.0: next(states)
+    )
+    installed = []
+    monkeypatch.setattr(
+        ops,
+        "_install_declared_node",
+        lambda: installed.append(1) or [ops.OpsResult(True, "Installed")],
+    )
+
+    results = ops._ensure_declared_node()
+    assert installed, "a host with no Node at all was not given one"
+    assert results[-1].ok, "the reconciler did not re-resolve after installing"
+
+    # And the other direction: an installer that succeeds over a host that
+    # stays wrong must still report failure.
+    still_wrong = _report(
+        node_runtime.NODE_MISMATCH, path="/opt/homebrew/bin/node", version="v26.11.0", major=26
+    )
+    monkeypatch.setattr(
+        ops.node_runtime, "node_version_report", lambda *, timeout=15.0: still_wrong
+    )
+    results = ops._ensure_declared_node()
+    assert not results[-1].ok
+    assert node_runtime.NODE_REMEDIATION_COMMAND in (results[-1].details or "")
+
+
+def test_the_reconciler_honours_an_explicit_pin_without_installing(monkeypatch):
+    """`NYXGPT_NODE_BIN` is an instruction. It is also what keeps the smoke
+    jobs' fault injection from triggering a real NodeSource install."""
+    from nyxgpt import ops
+
+    monkeypatch.setenv(node_runtime.NODE_BIN_ENV_VAR, "/tmp/injected/node")
+    monkeypatch.setattr(
+        ops.node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(
+            node_runtime.NODE_MISMATCH, path="/tmp/injected/node", version="v20.0.0", major=20
+        ),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_install_declared_node",
+        lambda: (_ for _ in ()).throw(AssertionError("installed while pinned")),
+    )
+
+    results = ops._ensure_declared_node()
+    assert not results[0].ok
+    assert "report only" in (results[0].details or "")

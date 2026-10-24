@@ -389,7 +389,7 @@ jobs:
             echo "::notice::Search API found no PR for issue #$ISSUE; falling back to a direct PR list scan"
             FOUND_PR=$(gh api "repos/${{ github.repository }}/pulls?state=all&per_page=100" --paginate \
               --jq ".[] | select(.body // \"\" | contains(\"Closes #${ISSUE}\")) | .number" \
-              | head -1)
+              | sed -n '1p')
           fi
 
           # A rescue draft (developer_ensure_pr_exists.sh, #3862) carries
@@ -405,7 +405,7 @@ jobs:
           if [[ -z "$FOUND_PR" ]]; then
             FOUND_PR=$(gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" --paginate \
               --jq ".[] | select(.body // \"\" | contains(\"<!-- rescue-pr: issue-${ISSUE} -->\")) | .number" \
-              | head -1)
+              | sed -n '1p')
             if [[ -n "$FOUND_PR" ]]; then
               RESCUE=true
               echo "::notice::Found rescue draft PR #$FOUND_PR for issue #$ISSUE; continuing on its branch instead of starting a new one"
@@ -1610,10 +1610,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # This workflow runs from the release branch's definition but checks out
+      # the work branch, which may predate .nvmrc. Read it from the work tree
+      # when present, else from the release branch -- never a literal here,
+      # so the declared version has exactly one source (#4194).
+      - name: Resolve the declared Node.js version
+        id: node_version
+        env:
+          RELEASE_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -f .nvmrc ]; then
+            version="$(tr -d '[:space:]' < .nvmrc)"
+          else
+            git fetch --quiet origin "$RELEASE_REF"
+            version="$(git show "origin/${RELEASE_REF}:.nvmrc" | tr -d '[:space:]')"
+            echo "::notice::work branch has no .nvmrc; using ${RELEASE_REF}'s (${version})"
+          fi
+          [ -n "$version" ] || { echo "::error::.nvmrc is empty"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: '.nvmrc'
+          node-version: ${{ steps.node_version.outputs.version }}
+
       - name: Install Node dependencies
         working-directory: web
         run: npm ci
@@ -2635,7 +2656,7 @@ jobs:
           # built on -- computed once here so every downstream step
           # (retry-budget lookup, Phase 3 prompt, auto-retry marker) uses
           # the exact same values.
-          FAILED_STEP_NAME="$(echo "$FAILED_STEPS" | head -1)"
+          FAILED_STEP_NAME="$(echo "$FAILED_STEPS" | sed -n '1p')"
           [[ -z "$FAILED_STEP_NAME" ]] && FAILED_STEP_NAME="unknown"
           SIGNATURE="$(printf '%s' "$ERROR_LOG" | python3 "$GITHUB_WORKSPACE/scripts/agents/lib/retry_budget.py" signature "$FAILED_STEP_NAME")"
           echo "failed_step=$FAILED_STEP_NAME" >> "$GITHUB_OUTPUT"
@@ -3079,7 +3100,7 @@ jobs:
           #    write one (it had not on #4166 -- it died before `steps.run`).
           if [[ -n "${EXECUTION_FILE:-}" && -s "${EXECUTION_FILE:-/nonexistent}" ]]; then
             LINE="$(jq -r '[.. | objects | select(has("error")) | .error | tostring] | first // empty' \
-              "$EXECUTION_FILE" 2>/dev/null | head -1)"
+              "$EXECUTION_FILE" 2>/dev/null | sed -n '1p')"
           fi
 
           # 2. The job log, anchored on the LAST claude-code-action invocation
@@ -3423,7 +3444,7 @@ jobs:
           # escalation step used to do in JavaScript).
           PHASE2_DIAGNOSIS=""
           if [[ -f /tmp/analysis_result.txt ]]; then
-            PHASE2_DIAGNOSIS="$(sed -n 's/^DIAGNOSIS=//p' /tmp/analysis_result.txt | head -1)"
+            PHASE2_DIAGNOSIS="$(sed -n 's/^DIAGNOSIS=//p' /tmp/analysis_result.txt | sed -n '1p')"
           fi
 
           # What the failing step recorded about itself (#3971) -- for Final

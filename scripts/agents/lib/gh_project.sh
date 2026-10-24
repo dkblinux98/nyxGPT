@@ -95,37 +95,94 @@ read_agent_error_detail() {
   return 0
 }
 
+# _signature_matches <text> <extended-regex> [grep-option...]
+#
+# THE ONE READER EVERY `classify_error` ARM USES (#4192, D-066).
+#
+# A here-string, not a pipe, and that is the whole point. `grep -q` leaves on
+# its first match; under `set -o pipefail` -- which this library's callers all
+# set -- the producer's EPIPE then becomes the pipeline's status, so a lost
+# race on `echo "$error_text" | grep -q …` reads as "this signature did not
+# match" and SILENTLY SKIPS AN ARM. There is no safe producer, only a safe
+# reader, and with no pipe there is nothing to race (ledger D-074).
+#
+# One function rather than ten spellings, so no arm can be converted and the
+# others left behind: before #4192's sweep this function held nine `grep -q`
+# pipelines and one already-drained `grep … >/dev/null`, which is what two
+# spellings of one decision looks like one round after a partial fix.
+# `tests/unit/test_failure_classification.py` reads the signature table out of
+# the arms through THIS call shape, and fails if an arm reaches for `grep`
+# directly -- a bypass would be a pattern the identifier-noise property test
+# never sees.
+_signature_matches() {
+  local text="$1" pattern="$2"
+  shift 2
+  grep -qE "$@" -e "$pattern" <<<"$text"
+}
+
 # Classifies error messages into retriable vs fatal
 # Returns: "retriable", "fatal", or "unknown"
 classify_error() {
   local error_text="$1"
 
+  # EVERY SIGNATURE BELOW MATCHES A SIGNAL, NOT A SUBSTRING (#4192).
+  #
+  # The failure text this reads is a run log: it carries commit SHAs, GitHub
+  # run and job ids, pytest node ids with line numbers, PR numbers and whole
+  # prompt bodies. So a signature that can be satisfied *incidentally* by that
+  # surrounding noise does not classify the failure -- it classifies the
+  # identifiers that happened to be printed beside it, and because the
+  # signatures are tried in order, one incidental match pre-empts the real one.
+  #
+  # That is not hypothetical. `529|[Oo]verloaded` sat above the red-head
+  # signature and matched the digits `529` ANYWHERE, so a red-head refusal
+  # carrying head `3f529aa0...` classified `retriable:api_overloaded` (waited
+  # two minutes, retried the same red head) while the identical refusal with
+  # head `0ac51a4c...` classified `retriable:ci_red` (handed the round back to
+  # the developer, which is #3971's contract). The classification depended on a
+  # random SHA, and `tests/test_reviewable_head_gate.sh` flaked on its
+  # fixture's.
+  #
+  # The rule, applied to every pattern here and asserted as a property by
+  # `tests/unit/test_failure_classification.py::test_no_signature_fires_on_identifier_noise`:
+  # a number is matched only where the text says what the number IS, and a
+  # wildcard never spans an unbounded distance.
+
   # Fatal errors - do NOT retry these
-  if echo "$error_text" | grep -qE "is not OPEN.*state=CLOSED"; then
+  if _signature_matches "$error_text" "is not OPEN[^|]{0,40}state=CLOSED"; then
     # Issue closed - could be intentional or accidental (Phase 2 will distinguish)
     echo "fatal:issue_closed"
     return
   fi
 
-  if echo "$error_text" | grep -qE "Authentication failed|permission denied|Unauthorized"; then
+  if _signature_matches "$error_text" "\b(Authentication failed|permission denied|Unauthorized)\b"; then
     # Auth failures won't fix themselves
     echo "fatal:auth_failure"
     return
   fi
 
-  if echo "$error_text" | grep -qE "already merged|PR.*merged"; then
+  # `already merged` is the sentence every real producer prints (`gh pr merge`,
+  # `review_accept_and_merge.sh`, `merge_data_branch.sh`). The second arm used
+  # to be `PR.*merged`, which is co-occurrence rather than assertion: one line
+  # mentioning a PR and the word "merged" anywhere after it was enough, and
+  # this project prints such lines on purpose -- the #4151 residue guard's
+  # heading, the conflict-resolution prompt's "already merged into <base>",
+  # even this issue's own text. A FATAL class decided by co-occurrence ends the
+  # round and pages the owner, so it is anchored to the claim being made about
+  # a specific PR.
+  if _signature_matches "$error_text" "already merged|\bPR #?[0-9]+ (is|was|has been) (already )?merged\b"; then
     # Work already complete
     echo "fatal:already_merged"
     return
   fi
 
   # Retriable errors - these might resolve with retry
-  if echo "$error_text" | grep -qE "API rate limit|rate limit exceeded"; then
+  if _signature_matches "$error_text" "API rate limit|rate limit exceeded"; then
     echo "retriable:rate_limit"
     return
   fi
 
-  if echo "$error_text" | grep -qE "network.*timeout|connection.*timed out|Connection reset"; then
+  if _signature_matches "$error_text" "network[^|]{0,30}timeout|connection[^|]{0,30}timed out|Connection reset"; then
     echo "retriable:network_timeout"
     return
   fi
@@ -136,12 +193,19 @@ classify_error() {
   # exhausted; nothing had been committed or pushed, so there was nothing to
   # repair -- and the run was escalated to the owner as a FATAL anyway, because
   # no signature matched and unknown defaults to fatal.
-  if echo "$error_text" | grep -qE "529|[Oo]verloaded"; then
+  #
+  # `529` is matched ONLY where the text says it is a status (#4192): the bare
+  # substring is in every third commit SHA and every GitHub run id, and it used
+  # to decide this class for them. `[Oo]verloaded` keeps only a leading word
+  # boundary, so the API's own error *shape* (`"type": "overloaded_error"`)
+  # still matches alongside its message (`Overloaded`).
+  if _signature_matches "$error_text" "\b[Oo]verloaded" \
+    || _signature_matches "$error_text" "(http|status(_code)?|code|error)[^0-9A-Za-z]{0,4}529\b" -i; then
     echo "retriable:api_overloaded"
     return
   fi
 
-  if echo "$error_text" | grep -qE "not a commit|stale ref|couldn't find remote ref"; then
+  if _signature_matches "$error_text" "not a commit|stale ref|couldn't find remote ref"; then
     echo "retriable:stale_ref"
     return
   fi
@@ -154,7 +218,7 @@ classify_error() {
   # to relay it. The signature is the refusal's own sentence, so it stays true
   # only while developer_submit_for_review.sh still prints it -- which
   # tests/test_reviewable_head_gate.sh pins.
-  if echo "$error_text" | grep -qE "red head is not reviewable"; then
+  if _signature_matches "$error_text" "red head is not reviewable"; then
     echo "retriable:ci_red"
     return
   fi
@@ -168,15 +232,15 @@ classify_error() {
   # name the gate instead of printing "error type could not be determined":
   # see scripts/agents/run_final_verification.sh and
   # scripts/agents/lib/escalation_evidence.py, which own the format this reads.
-  if echo "$error_text" | grep -q "Final Verification failed: gate="; then
+  if _signature_matches "$error_text" "Final Verification failed: gate="; then
     local _gate
     _gate="$(echo "$error_text" \
-      | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
+      | sed -n 's/.*Final Verification failed: gate=\([A-Za-z0-9_-]*\).*/\1/p' | sed -n '1p')"
     echo "verification_failed:${_gate:-unknown}"
     return
   fi
 
-  if echo "$error_text" | grep -qE "test.*failed|pytest.*FAILED|FAILED.*test"; then
+  if _signature_matches "$error_text" "test.*failed|pytest.*FAILED|FAILED.*test"; then
     # Test failures - let the 3-attempt fix loop handle these
     echo "retriable:test_failure"
     return
@@ -384,6 +448,16 @@ load_config() {
   # so no new repo variable is required.
   STATUS_CLOSED="${STATUS_CLOSED:-Closed}"
 
+  # The release ceremony's close-out lane (scripts/release_ceremony.sh
+  # Phase 3 sets every closed issue in the released milestone to it). Named
+  # here for the same reason as its three siblings above -- optional config
+  # key, literal default, no new repo variable -- and because until #4204 it
+  # was a bare string literal in the ceremony and absent from every list of
+  # accepted statuses, which made a RELEASED blocker read as "not accepted
+  # yet" forever. The vocabulary now lives in lib/acceptance_status.py; this
+  # is the name it is read under.
+  STATUS_DONE="${STATUS_DONE:-Done}"
+
   # Timezone in which sprint-date boundaries are evaluated (owner rule,
   # 2026-07-31: "midnight is midnight EDT, not UTC"). Iteration start dates
   # are timezone-less, so every "has this sprint started/ended?" comparison
@@ -493,13 +567,13 @@ get_fields_json() {
 field_id_by_name() {
   require_cmd jq
   local name="$1"
-  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .id' | head -n 1
+  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .id' | sed -n '1p'
 }
 
 field_type_by_name() {
   require_cmd jq
   local name="$1"
-  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .__typename' | head -n 1
+  get_fields_json | jq -r --arg n "$name" '.data.node.fields.nodes[] | select(.name==$n) | .__typename' | sed -n '1p'
 }
 
 single_select_option_id() {
@@ -866,7 +940,85 @@ issue_status() {
   }" -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F num="$num")" || return 1
   echo "$resp" \
     | jq -r --arg field "$STATUS_FIELD" '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[]? | select(.field.name==$field) | .name' \
-    | head -1
+    | sed -n '1p'
+}
+
+# ============================================================
+# The accepted-status vocabulary (#4204, ledger D-066)
+# ============================================================
+#
+# "Is this issue accepted?" is answered in ONE place --
+# lib/acceptance_status.py -- and these three functions are how the shell
+# asks. Before #4204 every caller carried its own hard-coded list of Status
+# values and `Done` (which scripts/release_ceremony.sh Phase 3 writes) was in
+# none of them, so an issue that was accepted and then RELEASED read as "not
+# accepted yet" permanently: nothing moves an issue back out of `Done`.
+#
+# The vocabulary is read ONCE per run and compared in-process, so a sweep over
+# N blockers pays one interpreter start-up rather than N. The cache is keyed on
+# the status names themselves, so a caller (or a test) that changes them mid-run
+# gets a fresh read rather than a stale answer.
+_ACCEPTANCE_VOCAB_KEY=""
+_ACCEPTANCE_VOCAB_ACCEPTED=""
+_ACCEPTANCE_VOCAB_REACHED=""
+
+_acceptance_vocabulary_load() {
+  require_cmd jq
+  require_cmd python3
+  local key resp
+  key="${STATUS_ACCEPTANCE_TESTING:-}|${STATUS_FOR_RELEASE:-}|${STATUS_DONE:-}"
+  if [[ "$key" == "$_ACCEPTANCE_VOCAB_KEY" && -n "$_ACCEPTANCE_VOCAB_ACCEPTED" ]]; then
+    return 0
+  fi
+  # The names are passed explicitly rather than inherited: load_config sets
+  # them as shell variables and several callers (and every shell test) never
+  # export them, so os.getenv() in the module would otherwise see nothing and
+  # silently fall back to the defaults.
+  resp="$(STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}" \
+          STATUS_FOR_RELEASE="${STATUS_FOR_RELEASE:-For Release}" \
+          STATUS_DONE="${STATUS_DONE:-Done}" \
+          python3 "${_LIB_DIR}/acceptance_status.py" vocabulary)" || return 2
+  _ACCEPTANCE_VOCAB_ACCEPTED="$(jq -r '.accepted[]' <<<"$resp")" || return 2
+  _ACCEPTANCE_VOCAB_REACHED="$(jq -r '.reached_acceptance[]' <<<"$resp")" || return 2
+  [[ -n "$_ACCEPTANCE_VOCAB_ACCEPTED" ]] || return 2
+  _ACCEPTANCE_VOCAB_KEY="$key"
+}
+
+# Membership test against one of the two cached lists. Exit 0 = yes, 1 = no,
+# 2 = the vocabulary could not be read. Callers must distinguish 2 from 1: an
+# unreadable vocabulary is "unknown", and treating it as "not accepted" would
+# hold work back silently, exactly the way #4204's hard-coded lists did.
+_status_in_vocabulary() {
+  local list="$1" status="$2" entry
+  _acceptance_vocabulary_load || return 2
+  while IFS= read -r entry; do
+    [[ -n "$entry" && "$entry" == "$status" ]] && return 0
+  done <<<"$list"
+  return 1
+}
+
+# True when `status` means the owner has ACCEPTED this issue: `For Release`,
+# or `Done` once the release ceremony closed its milestone out.
+status_is_accepted() {
+  _acceptance_vocabulary_load || return 2
+  _status_in_vocabulary "$_ACCEPTANCE_VOCAB_ACCEPTED" "$1"
+}
+
+# True when `status` means the issue is merged and has at least REACHED the
+# owner's acceptance queue -- "Acceptance Testing or beyond", which is how the
+# review runbook has always described the parked-blocked sweep's gate.
+# `Acceptance Failed` is deliberately NOT in this set: work is still owed on
+# both populations that park there (#3780, D-042). See acceptance_status.py.
+status_has_reached_acceptance() {
+  _acceptance_vocabulary_load || return 2
+  _status_in_vocabulary "$_ACCEPTANCE_VOCAB_REACHED" "$1"
+}
+
+# The accepted-status list as a JSON array, for callers that hand the decision
+# to `jq` rather than testing one value at a time.
+accepted_statuses_json() {
+  _acceptance_vocabulary_load || return 2
+  printf '%s\n' "$_ACCEPTANCE_VOCAB_ACCEPTED" | jq -R -n -c '[inputs | select(length > 0)]'
 }
 
 # Clears (unsets) a project field on an item -- used by
@@ -1259,8 +1411,10 @@ acceptance_lane_snapshot() {
 # (drain_gate.py rework_features applies the rule).
 #
 # An issue that cannot be read contributes nothing -- one unreadable issue
-# must not silently open the gate wider than it should, and the next poll
-# retries.
+# must not silently open the gate wider than it should. It is retried by the
+# gate's next evaluation, which is still event-driven (`issues: closed`, a
+# sweep's `workflow_run`, or an owner dispatch) -- not by a poll; this
+# workflow has had no schedule since 2026-08-25.
 drain_gate_classify_held() {
   local held_json="$1"
   require_cmd jq
@@ -1371,7 +1525,9 @@ drain_gate_state() {
 # not collapse into any of the three answers: each of them authorizes a
 # write (dispatch a developer / promote and close an issue / leave parked),
 # and a transient API failure is evidence for none. Callers skip the issue
-# and let the next sweep decide.
+# and let the next run of their sweep decide -- which since #4201 is the next
+# DISPATCH of it, not a half-hour tick, so the skip is logged loudly rather
+# than relied on to resolve itself shortly.
 issue_acceptance_role() {
   local issue="$1"
   require_cmd jq
@@ -1394,7 +1550,8 @@ issue_acceptance_role() {
   # Fail-safe, matching the payload read above: each of the three roles
   # authorizes a write, so an unreadable edge must answer "unknown" (return 1)
   # rather than collapse into one of them. Recoverable in both directions --
-  # the item stays parked and the next poll re-reads it (#3999 review).
+  # the item stays parked and the next run re-reads it (#3999 review); since
+  # #4201 that run is the next dispatch of the sweep.
   local blocks_raw blocked_by_raw
   blocks_raw="$(blocking_issues_checked "$issue")" || return 1
   blocked_by_raw="$(blocked_by_issues_checked "$issue")" || return 1
@@ -1444,7 +1601,9 @@ acceptance_reopen_original() {
 
 This issue is reopened as the signal that it failed acceptance testing; the comment above says why.${derived_note}
 
-It waits here in **${lane}**, assigned to @${SCRUM_AGENT:-the scrummaster agent}. Nothing is dispatched against *this* issue — when everything blocking it reaches **${STATUS_FOR_RELEASE:-For Release}**, transitively, \`promote_accepted_features.sh\` moves it there, assigns it back to @${HUMAN_OWNER:-the human owner} and closes it." \
+It waits here in **${lane}**, assigned to @${SCRUM_AGENT:-the scrummaster agent}. Nothing is dispatched against *this* issue — when everything blocking it reaches **${STATUS_FOR_RELEASE:-For Release}**, transitively, \`promote_accepted_features.sh\` moves it there, assigns it back to @${HUMAN_OWNER:-the human owner} and closes it.
+
+The sweep runs when the actor that made the last move dispatches it, not on a timer (#4201). An agent merging the last blocker dispatches it automatically. If **you** move the last blocker to **${STATUS_FOR_RELEASE:-For Release}** on the board, that raises no event GitHub can deliver — one dispatch picks it up: \`gh workflow run promote_accepted_features.yml --ref ${RELEASE_BRANCH:-<release branch>}\`." \
     || _warn "acceptance_reopen_original: could not comment on #${issue}."
 
   return 0
@@ -1979,6 +2138,140 @@ dispatch_next_issue() {
   return 1
 }
 
+# -------------------------
+# Acceptance sweeps: dispatched by the actor, never polled for (#4201)
+# -------------------------
+# The two acceptance sweeps -- "Promote Accepted Features"
+# (promote_accepted_features.sh) and "Sweep Parked Blocked Issues"
+# (sweep_parked_blocked_issues.sh) -- exist to notice that a board lane
+# changed. Both ran on `*/30 * * * *` until 2026-10-21: 96 runs a day
+# between them, each one checking out the release branch and walking every
+# parked issue's transitive blocked-by closure through the API to report
+# "Promoted 0 issue(s)". That is the shape D-060 retired for the release
+# ceremony and the 2026-08-25 change retired for the drain gate, for the
+# same two reasons: GitHub throttles a busy cron to every 3-8 hours, so the
+# poll is unreliable as well as expensive, and first principle 1 says do not
+# poll what will notify you.
+#
+# So every actor that changes the state a sweep waits on dispatches the
+# sweeps itself, through THIS function and no other (one source per
+# decision, D-066): the review merge path, the release ceremony and the
+# drain gate release. Callers do not choose WHICH sweep to run -- the two
+# read overlapping state, both are idempotent, and a caller that had to pick
+# would be a second copy of "which lane did I just change?".
+#
+# The two acceptance handlers (`@acceptance-failure`, `@improvement`) are
+# deliberately NOT callers, though they do write board state. What they
+# write is a new BLOCKER plus a park: they add a gate, they never satisfy
+# one, so a sweep dispatched from them can promote nothing. The one thing it
+# could have done -- heal a missing link -- does not apply to a
+# handler-filed issue either (the heal loop only reaches candidates
+# resolvable from a native edge or the retired prose marker, and these write
+# no marker; #3999). Dispatching there would be two runs per owner comment
+# to do nothing, which is the cost this change exists to remove. What the
+# handlers do carry is the owner-facing copy naming the dispatch they will
+# need after moving the last blocker themselves.
+#
+# Why `workflow_dispatch` (`gh workflow run --ref`) and not a
+# `repository_dispatch` event like `dispatch_next_issue`:
+#
+#   * `repository_dispatch` only ever triggers the DEFAULT branch's copy of
+#     a workflow. The sweeps already check out `RELEASE_BRANCH` explicitly,
+#     so a dispatch that runs the release branch's own copy is the honest
+#     expression of what they do -- and it is exercisable from a branch,
+#     which is what lets this trigger carry executed evidence at all
+#     (D-006). A `repository_dispatch` trigger could only ever be inspected
+#     until after it merged.
+#   * it is addressable, so the owner's documented single dispatch
+#     (`gh workflow run promote_accepted_features.yml`) is the SAME
+#     mechanism the agents use, rather than a second path with its own
+#     failure modes.
+#
+# Best-effort by construction: always returns 0. A sweep that did not get
+# dispatched costs a delayed promotion; a merge, ceremony or gate release
+# that failed because a dispatch failed costs the work itself.
+#
+#: The two sweeps, in the order a reader would want them dispatched. Add a
+#: sweep here, not at a call site -- a caller that names one workflow is the
+#: divergence this function exists to prevent.
+ACCEPTANCE_SWEEP_WORKFLOWS=(
+  "promote_accepted_features.yml"
+  "sweep_parked_blocked_issues.yml"
+)
+
+# Args: <reason> [ref] [dry_run]
+#   reason   -- what changed, for the run log
+#   ref      -- the branch whose copy of the workflow runs; defaults to
+#               RELEASE_BRANCH, which is the branch the sweeps check out
+#   dry_run  -- "true" dispatches the sweeps in report-only mode. Not a test
+#               hook bolted on: it is how THIS path gets executed evidence
+#               (D-006) without moving an issue. The alternative was a smoke
+#               job dispatching the sweeps by hand, which would be the second
+#               copy of the dispatch this function exists to prevent.
+dispatch_acceptance_sweeps() {
+  local reason="${1:-}" ref="${2:-}" dry_run="${3:-}" wf
+  local -a inputs=()
+  [[ -z "$dry_run" ]] || inputs=(-f "dry_run=${dry_run}")
+
+  # `${RELEASE_BRANCH:-}` and not `get_release_branch`: that helper echoes the
+  # variable bare, and under `set -eu` -- which every caller of this function
+  # runs with -- an unbound variable makes bash exit the command
+  # substitution's subshell fatally, bypassing the `|| echo ""` that looks
+  # like it handles it and killing the merge that called us. `load_config`
+  # requires RELEASE_BRANCH, so this is unreachable in the loop; it is written
+  # this way because "unreachable" is not a property this function may depend
+  # on when the cost of being wrong is a lost merge.
+  if [[ -z "$ref" ]]; then
+    ref="${RELEASE_BRANCH:-}"
+  fi
+  if [[ -z "$ref" ]]; then
+    # Without a ref `gh workflow run` falls back to the default branch,
+    # which is the trap manually_trigger_pr_review.sh documents: the run
+    # looks successful and executes a copy of the workflow nobody chose.
+    # Say so instead.
+    _warn "dispatch_acceptance_sweeps: no RELEASE_BRANCH configured -- the acceptance sweeps were NOT dispatched (${reason}). Run them by hand: gh workflow run promote_accepted_features.yml --ref <release branch>"
+    return 0
+  fi
+
+  for wf in "${ACCEPTANCE_SWEEP_WORKFLOWS[@]}"; do
+    if gh workflow run "$wf" -R "${REPO_OWNER}/${REPO_NAME}" --ref "$ref" \
+        "${inputs[@]+"${inputs[@]}"}" >/dev/null 2>&1; then
+      echo "[dispatch] acceptance sweep ${wf} dispatched on ${ref}${dry_run:+ (dry_run=${dry_run})} (${reason})" >&2
+    else
+      # Reported, never propagated: see the best-effort note above. There is
+      # deliberately no status variable to carry out of the loop -- one would
+      # only invite a later `return "$rc"` that breaks the contract.
+      _warn "dispatch_acceptance_sweeps: GitHub refused the dispatch of ${wf} on ${ref} (${reason}). It is not retried here; dispatch it by hand if a promotion is waiting."
+    fi
+  done
+
+  return 0
+}
+
+# True when a drain-gate run should dispatch the sweeps (#4201). Exit 0 =
+# dispatch.
+#
+# This is a predicate rather than an inline `if` in drain_gate.sh because the
+# property it carries is the one that keeps a workflow CYCLE from existing:
+# `acceptance_drain_gate.yml` triggers on `workflow_run` completion of both
+# sweeps, so a gate run that dispatched them unconditionally would be
+# gate -> sweeps -> gate -> sweeps without end (the #3790 shape). Dispatching
+# only when this run actually RELEASED something breaks it in one hop -- the
+# next evaluation finds the held lane empty, releases nothing and dispatches
+# nothing. A DRY_RUN still fills `.released` with what it WOULD move, so it is
+# excluded explicitly: a report that starts two real runs is not a report.
+#
+# Being a function means it is executed by
+# tests/unit/test_board_sweeps_are_dispatch_driven.py against each gate
+# outcome, instead of being a line of shell nobody can run.
+drain_gate_wants_sweeps() {
+  local result="${1:-}"
+  [[ "${DRY_RUN:-0}" != "1" ]] || return 1
+  local count
+  count="$(jq -r '(.released // []) | length' <<<"$result" 2>/dev/null || echo 0)"
+  [[ "${count:-0}" != "0" ]]
+}
+
 sprint_autopilot_kick() {
   local issue="$1" verb="${2:-merged}"
   local event_phrase continue_phrase
@@ -2086,9 +2379,13 @@ ${AUTOPILOT_INFO_MARKER}" \
 
       park_state=""
       if [[ -n "$snapshot" ]]; then
+        # `status_done` travels with the other two (#4204): sprint_park_state
+        # asks acceptance_status.py whether a closed item is accepted, and
+        # `Done` -- what the release ceremony sets a released issue to -- is.
         park_state="$(jq -n -c --argjson s "$snapshot" --arg b "$STATUS_BACKLOG" \
           --arg f "${STATUS_FOR_RELEASE:-For Release}" \
-          '$s + {status_backlog: $b, status_for_release: $f}' \
+          --arg d "${STATUS_DONE:-Done}" \
+          '$s + {status_backlog: $b, status_for_release: $f, status_done: $d}' \
           | python3 "${_LIB_DIR}/sprint_calc.py" sprint-park-state 2>/dev/null || echo "")"
       fi
 
@@ -2207,7 +2504,7 @@ print((datetime.datetime.utcnow() - datetime.timedelta(minutes=int(sys.argv[1]))
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" --paginate 2>/dev/null \
     | jq -s --arg marker "$marker" --arg cutoff "$cutoff" \
       '[.[][] | select(.body | contains($marker)) | select(.created_at >= $cutoff)] | length > 0' 2>/dev/null \
-    | grep -q true
+    | grep true >/dev/null
 }
 
 # -------------------------
@@ -3250,7 +3547,7 @@ related_feature_of() {
     body="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" --jq '.body // ""' 2>/dev/null || echo "")"
   fi
   jq -n -c --argjson b "${blocks:-[]}" --arg body "$body" '{blocks: $b, body: $body}' \
-    | python3 "${_LIB_DIR}/issue_relationships.py" resolve-related 2>/dev/null | head -1
+    | python3 "${_LIB_DIR}/issue_relationships.py" resolve-related 2>/dev/null | sed -n '1p'
 }
 
 # Assign issue to developer and trigger workflow
@@ -3975,7 +4272,7 @@ cleanup_superseded_branches() {
 
   while IFS= read -r cand; do
     [[ -n "$cand" && "$cand" != "$keep_branch" ]] || continue
-    if echo "$protected" | grep -qx "$cand"; then
+    if grep -qx "$cand" <<<"$protected"; then
       echo "[dev] Keeping prior branch $cand (head of an open PR)" >&2
       continue
     fi
@@ -4350,8 +4647,12 @@ _issue_open_state() {
 
 # Runs the sweep: lists parked issues (list_parked_blocked_issues), then
 # iterates to a fixed point promoting any whose blockers (blocked_by_issues)
-# have ALL completed -- "complete" = the blocker is CLOSED and its Status is
-# STATUS_ACCEPTANCE_TESTING or STATUS_FOR_RELEASE. A promotion made mid-run
+# have ALL completed -- "complete" = the blocker is CLOSED and its Status has
+# reached acceptance, which status_has_reached_acceptance() answers from the
+# one vocabulary in lib/acceptance_status.py (#4204). It used to be tested
+# against a list written here, and `Done` -- what the release ceremony sets a
+# released issue to -- was not on it, so a blocker that was accepted and then
+# released held its parked issue back forever. A promotion made mid-run
 # updates the same in-memory resolved-state cache the completeness check
 # reads, so a parked blocker chain (A blocked by B blocked by C) resolves
 # transitively in one run instead of one hop per sweep interval. Honors
@@ -4359,12 +4660,13 @@ _issue_open_state() {
 # downstream chain links are evaluated as they would really resolve).
 #
 # Reads: STATUS_IN_REVIEW, STATUS_ACCEPTANCE_TESTING, STATUS_FOR_RELEASE,
-# HUMAN_OWNER (from load_config). Prints a final "Promoted N issue(s)." line
+# STATUS_DONE, HUMAN_OWNER (from load_config -- the last three only through
+# status_has_reached_acceptance). Prints a final "Promoted N issue(s)." line
 # to stdout; all progress detail goes to stderr.
 sweep_parked_blocked_issues() {
   require_cmd jq
   local dry_run="${DRY_RUN:-0}"
-  local n p b info bstate bstatus blocker_refs
+  local n p b info bstate bstatus blocker_refs rc
   local iter changed all_complete promoted_count max_iterations
 
   local -a parked=()
@@ -4409,10 +4711,31 @@ sweep_parked_blocked_issues() {
         info="${resolved[$b]}"
         bstate="${info%%:*}"
         bstatus="${info#*:}"
-        if [[ "$bstate" != "CLOSED" ]] || { [[ "$bstatus" != "$STATUS_ACCEPTANCE_TESTING" ]] && [[ "$bstatus" != "$STATUS_FOR_RELEASE" ]]; }; then
+        if [[ "$bstate" != "CLOSED" ]]; then
           all_complete=0
           break
         fi
+        # "At or past acceptance?" is asked of lib/acceptance_status.py, not
+        # of a status list of this function's own (#4204). Exit 2 means the
+        # vocabulary itself could not be read: hold, and SAY so -- a silent
+        # "not complete" is indistinguishable from an unaccepted blocker,
+        # which is the shape of the defect this consolidation removes.
+        # `|| rc=$?`, never a bare call: under the caller's `set -e` a false
+        # test standing as the whole statement would exit the sweep.
+        rc=0
+        status_has_reached_acceptance "$bstatus" || rc=$?
+        case "$rc" in
+          0) ;;
+          1)
+            all_complete=0
+            break
+            ;;
+          *)
+            echo "[sweep-parked] [warn] Could not read the accepted-status vocabulary -- holding #$p (blocker #$b is '${bstatus}')" >&2
+            all_complete=0
+            break
+            ;;
+        esac
       done
 
       if [[ "$all_complete" == "1" ]]; then
@@ -4509,8 +4832,28 @@ head_check_runs() {
           | "\(.name)=\(if .status != "completed" then "pending" else (.conclusion // "pending") end)"'
 }
 
-# "<name>=<url>" for every check run on a commit -- where to GO to read why it
-# failed (#4179).
+# check_conclusion_is_failure <conclusion>
+#
+# THE one place that decides whether a check-run conclusion means the gate did
+# not pass. `required_check_state` reads it to classify the head and
+# `red_head_check_lines` reads it to pick WHICH run to cite; a second copy of
+# this list is how the two would come to disagree about one check (D-066).
+#
+# `cancelled` counts as failure: the gate it stood for did not pass, and the
+# only routine cancellation here (concurrency, newest-wins) changes the head
+# SHA, so it is not this head's answer.
+#
+# `success`, `neutral` and `skipped` are not failures. A skipped job is a path
+# filter or an `if:` having decided the job does not apply.
+check_conclusion_is_failure() {
+  case "${1:-}" in
+    failure | timed_out | cancelled | action_required | startup_failure | stale) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# "<name>\t<conclusion>\t<url>" for every check run on a commit -- where to GO
+# to read why it failed (#4179).
 #
 # A separate function and a separate call rather than a fourth line on
 # `required_check_state`: this is only ever wanted on the red path (a refusal,
@@ -4519,11 +4862,31 @@ head_check_runs() {
 # its three-line output is a pinned contract. Never fails the caller -- a URL
 # is a convenience on a failure path, and the check's NAME is the part that
 # matters.
+#
+# THE CONCLUSION IS CARRIED, not just the URL, because a check NAME is not
+# unique on a head (#4192). GitHub attaches the `push` run's check runs and the
+# `pull_request` run's check runs to the same commit, so a workflow that
+# triggers on both reports twice under one name -- and the two can disagree:
+# on PR #4193's head `fd2247c4`, `security-scan` was `skipped` (push, path
+# filter) and `failure` (pull_request). This function used to emit `name=url`
+# and the caller took the first match, so the refusal pointed the next round at
+# the SKIPPED run, whose log is empty. `required_check_state` was right about
+# which check failed and the brief was wrong about where to read it, which is
+# the same defect this issue is about one level down: the report was not
+# evidence.
+#
+# Tab-separated, not `=`-separated: a check-run URL may legitimately contain
+# `=` in a query string, and splitting a three-field record on it needs the
+# caller to count separators.
 head_check_links() {
   local sha="$1"
   require_cmd gh
   gh api "repos/${REPO_OWNER}/${REPO_NAME}/commits/${sha}/check-runs" --paginate \
-    --jq '.check_runs[] | "\(.name)=\(.html_url // .details_url // "")"' 2>/dev/null || return 0
+    --jq '.check_runs[]
+          | [.name,
+             (if .status != "completed" then "pending" else (.conclusion // "pending") end),
+             (.html_url // .details_url // "")]
+          | @tsv' 2>/dev/null || return 0
 }
 
 # red_head_check_lines <sha> <failed_names_csv>
@@ -4543,6 +4906,11 @@ head_check_links() {
 # The URL is best effort. A failing check with no readable URL still gets its
 # line, because "which check" is the cause and "where to read it" is the
 # convenience.
+#
+# When a name appears more than once on the head -- routine, see
+# `head_check_links` -- the FAILING run's URL wins. Falling back to any run
+# with a URL keeps the old best-effort behaviour for the case where the name
+# failed but GitHub gave no link for that particular run.
 red_head_check_lines() {
   local sha="${1:-}" failed_csv="${2:-}"
   [[ -n "$failed_csv" ]] || return 0
@@ -4556,13 +4924,30 @@ red_head_check_lines() {
     [[ -n "$name" ]] || continue
     url=""
     if [[ -n "$links" ]]; then
-      # Split on the FIRST `=` only: a check-run URL may legitimately carry
-      # one in a query string, and `-F=` would truncate it there.
-      url="$(printf '%s\n' "$links" \
-        | awk -v n="$name" 'index($0, n "=") == 1 { u = substr($0, length(n) + 2); if (u != "") { print u; exit } }')"
+      url="$(_red_head_check_url "$name" "$links")"
     fi
     printf 'red-head-check: %s%s\n' "$name" "${url:+ $url}"
   done
+  return 0
+}
+
+# _red_head_check_url <name> <links>
+#
+# The URL to cite for one failing check name, given `head_check_links` output.
+# A run whose conclusion `check_conclusion_is_failure` accepts wins; otherwise
+# the first run of that name that has a URL at all.
+_red_head_check_url() {
+  local want="${1:-}" links="${2:-}" row_name row_concl row_url fallback=""
+  while IFS=$'\t' read -r row_name row_concl row_url; do
+    [[ "$row_name" == "$want" ]] || continue
+    [[ -n "$row_url" ]] || continue
+    if check_conclusion_is_failure "$row_concl"; then
+      printf '%s\n' "$row_url"
+      return 0
+    fi
+    [[ -n "$fallback" ]] || fallback="$row_url"
+  done <<< "$links"
+  [[ -n "$fallback" ]] && printf '%s\n' "$fallback"
   return 0
 }
 
@@ -4607,24 +4992,24 @@ required_check_state() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
+    # `%=*` is the SHORTEST matching suffix and `##*=` the LONGEST matching
+    # prefix, so the pair splits on the LAST `=`: a check name containing one
+    # (`my=check=success`) still yields `my=check` / `success`. Written down
+    # because this pair reads like it would mis-split and does not -- #4192's
+    # round-6 review raised it as a defect, and it was measured, not argued.
     name="${line%=*}"
     concl="${line##*=}"
-    printf '%s\n' "$names" | grep -Fxq -- "$name" || continue
+    printf '%s\n' "$names" | grep -Fx -- "$name" >/dev/null || continue
     present=$((present + 1))
-    case "$concl" in
-      # `cancelled` counts as failure: the gate it stood for did not pass, and
-      # the only routine cancellation here (concurrency, newest-wins) changes
-      # the head SHA, so it is not this head's answer.
-      failure|timed_out|cancelled|action_required|startup_failure|stale)
-        [[ ",$failed," == *",$name,"* ]] || failed="${failed:+$failed,}$name"
-        ;;
-      pending)
-        [[ ",$pending," == *",$name,"* ]] || pending="${pending:+$pending,}$name"
-        ;;
-      # success / neutral / skipped: a skipped job is a path filter or an `if:`
-      # having decided the job does not apply, which is not a failure.
-      *) ;;
-    esac
+    # `check_conclusion_is_failure` is the single source for this list -- see
+    # its comment. `failed` wins over `pending` for the same name, which is
+    # what makes a head with two runs of one name (push + pull_request) answer
+    # on the one that failed.
+    if check_conclusion_is_failure "$concl"; then
+      [[ ",$failed," == *",$name,"* ]] || failed="${failed:+$failed,}$name"
+    elif [[ "$concl" == "pending" ]]; then
+      [[ ",$pending," == *",$name,"* ]] || pending="${pending:+$pending,}$name"
+    fi
   done <<< "$runs"
 
   local state

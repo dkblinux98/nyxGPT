@@ -92,7 +92,7 @@ for n in "${issues[@]}"; do
         '[.[]|select(.closingIssuesReferences[]?.number==$n)]|sort_by(.number)|last // empty')"
 
   if [[ -z "$row" || "$row" == "null" ]]; then
-    br="$(git ls-remote --heads origin 2>/dev/null | grep -oE "refs/heads/[^ ]*${n}[^ ]*" | head -1 | sed 's|refs/heads/||')"
+    br="$(git ls-remote --heads origin 2>/dev/null | grep -oE "refs/heads/[^ ]*${n}[^ ]*" | sed -n '1s|refs/heads/||p')"
     if [[ -n "$br" ]]; then
       printf "%-7s %-8s %-28s %s\n" "#$n" "$istate" "BRANCH, NO PR" "$br -- pushed, never submitted"
     else
@@ -124,7 +124,7 @@ for n in "${issues[@]}"; do
 
   rd="$(jq -r '.reviewDecision // "PENDING"' <<<"$row")"
   mg="$(jq -r '.mergeable // "?"' <<<"$row")"
-  br="$(git ls-remote --heads origin 2>/dev/null | grep -oE "refs/heads/[^ ]*${n}[^ ]*" | head -1 | sed 's|refs/heads/||')"
+  br="$(git ls-remote --heads origin 2>/dev/null | grep -oE "refs/heads/[^ ]*${n}[^ ]*" | sed -n '1s|refs/heads/||p')"
   lag="?"
   [[ -n "$br" ]] && lag="$(git rev-list --count "origin/${br}..origin/${RELEASE}" 2>/dev/null || echo '?')"
   printf "%-7s %-8s %-28s %s\n" "#$n" "$istate" "$st PR#$pr $rd" "mergeable=$mg lag=$lag"

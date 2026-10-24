@@ -22,6 +22,10 @@ on:
       - 'docker-compose.yml'
       - '.env.example'
       - 'src/nyxgpt/model_bootstrap.py'
+      # The pull itself, including its retry budget, lives here -- the
+      # Compose entrypoint and this module are two copies of one decision
+      # (#4192), so a change to either must reach this job.
+      - 'src/nyxgpt/models.py'
       - 'scripts/compose-model-prepull-smoke.sh'
       - '.github/workflows/compose-model-prepull-smoke.yml'
   push:
@@ -29,6 +33,10 @@ on:
       - 'docker-compose.yml'
       - '.env.example'
       - 'src/nyxgpt/model_bootstrap.py'
+      # The pull itself, including its retry budget, lives here -- the
+      # Compose entrypoint and this module are two copies of one decision
+      # (#4192), so a change to either must reach this job.
+      - 'src/nyxgpt/models.py'
       - 'scripts/compose-model-prepull-smoke.sh'
       - '.github/workflows/compose-model-prepull-smoke.yml'
   workflow_dispatch:

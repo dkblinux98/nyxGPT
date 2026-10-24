@@ -22,6 +22,7 @@ executed by `.github/workflows/cloud-artifact-smoke.yml` (D-006).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 
 import pytest
@@ -88,6 +89,10 @@ def fake_docker(monkeypatch, tmp_path):
         ),
     )
     fake.answer("http_code", _completed(0, "200"))
+    # The bootstrap provisioned the declared Node (#4194). Its own
+    # `command -v node` rule above answers 1, which is the PRE-bootstrap
+    # bareness assertion; this is the post-bootstrap machine.
+    fake.answer("node -v", _completed(0, f"v{smoke_node_runtime.NODE_MAJOR}.21.0"))
     # A machine that came up on the Cassandra session backend (#3865): the
     # wrapped reader says so, the API accepts the session, and the row is in
     # `nyxgpt.chat_sessions`. Tests that care describe their own deviation.
@@ -95,6 +100,17 @@ def fake_docker(monkeypatch, tmp_path):
     fake.answer("sessions/init", _completed(0, '{"ok": true, "name": "cloud-artifact-smoke"}'))
     fake.answer("cqlsh", _completed(0, "\n name\n------------\n cloud-artifact-smoke\n\n(1 rows)"))
     return fake
+
+
+@contextlib.contextmanager
+def _resolved_node(version: str):
+    """Make the container's `node -v` answer `version` ("" for no node at all)."""
+    original = smoke._exec_as_target
+    smoke._exec_as_target = lambda command, **kwargs: version  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        smoke._exec_as_target = original  # type: ignore[assignment]
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -132,6 +148,7 @@ def test_passing_run_records_its_verdict_and_removes_the_container(fake_docker, 
         "artifact",
         "bootstrap",
         "repo-less",
+        "declared-node",
         "services",
         "session-backend",
         "teardown",
@@ -257,6 +274,29 @@ def test_every_fault_expects_a_class_the_signature_table_can_produce(fake_docker
     classes = {name for name, _pattern, _meaning in smoke._FAILURE_SIGNATURES}
 
     assert {fault.expects for fault in smoke.FAULTS.values()} <= classes
+
+
+def test_the_declared_node_verdicts_classify_as_node_provisioning():
+    """Every wording `verify_declared_node` can raise must classify (#4179).
+
+    The `no-node` fault `expects="node-provisioning"`, and since #4194 that
+    fault surfaces at `verify_declared_node` rather than later as a missing
+    `npm` -- so a signature table that knew only the old spellings would
+    report "an unclassified failure" and the fault-injection verdict would say
+    the smoke cannot see a defect class it had just seen.
+
+    Written against the real messages, produced by the real function, so a
+    reworded verdict fails here instead of silently leaving the classifier
+    behind.
+    """
+    declared = smoke_node_runtime.NODE_MAJOR
+    for version in ("", f"v{declared - 4}.19.5", f"v{declared + 2}.11.0"):
+        with pytest.raises(smoke.ArtifactSmokeFailure) as raised, _resolved_node(version):
+            smoke.verify_declared_node()
+        assert smoke.failure_class(str(raised.value)) == "node-provisioning", (
+            f"`verify_declared_node`'s verdict for {version or 'no node'!r} does not "
+            f"classify: {raised.value}"
+        )
 
 
 def test_old_python_fault_rewrites_versioned_interpreters():
@@ -530,6 +570,43 @@ def test_a_passing_run_proves_a_session_reached_cassandra(fake_docker):
     # would just re-report whatever store it used, which is the thing under
     # test.
     assert any("cqlsh" in call and "chat_sessions" in call for call in joined)
+
+
+def test_a_wrong_major_node_fails_the_run(fake_docker):
+    """#4194, both directions. The happy path above is the second direction.
+
+    The existence checks this replaces -- `command -v node` beforehand, and a
+    web build that did not die for want of `npm` -- are satisfied by every
+    wrong major as well as every right one, which is how an instance
+    provisioned by a `setup_20.x` bootstrap passed while serving a bundle
+    built and tested on another line.
+    """
+    fake_docker.answer("node -v", _completed(0, "v20.19.5"))
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "not the Node" in result["failure"]
+    assert str(smoke_node_runtime.NODE_MAJOR) in result["failure"]
+    # And it is reported BEFORE the service checks: a web tier answering 200
+    # off the wrong major is the state this exists to stop, and it would pass
+    # them.
+    assert [step["step"] for step in result["steps"]].count("services") == 0
+
+
+def test_no_node_at_all_fails_the_run_as_a_version_problem(fake_docker):
+    """A bootstrap that installed nothing is a Node verdict, not a silence.
+
+    The old shape reported this as "npm: command not found" from whatever step
+    happened to need it next, nowhere near the provisioning that did not
+    happen.
+    """
+    fake_docker.answer("node -v", _completed(1, ""))
+
+    result = smoke.run_container_smoke(_args())
+
+    assert not result["passed"]
+    assert "left this machine on Node none" in result["failure"]
 
 
 def test_a_file_backed_instance_fails_the_run(fake_docker):

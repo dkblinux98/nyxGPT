@@ -405,6 +405,13 @@ class NyxgptApi < Formula
     # moved the failure from `.../simple/pip/` to `.../simple/setuptools/`.
     # The backend is seeded into the venv first so the child is never
     # spawned. See ../nyxgpt-api.rb's install block for the full account.
+    # nyxGPT's one remote-fetch policy (#4205), as environment rather than
+    # flags for the reason just given: the build backend's child pip inherits
+    # no flag from its parent, but it does inherit `PIP_*`. Numbers from
+    # src/nyxgpt/build_fetch_policy.py; the guard test fails on drift.
+    ENV["PIP_RETRIES"] = "5"
+    ENV["PIP_TIMEOUT"] = "30"
+
     wheelhouse = buildpath/"pip-bootstrap"
     system python, "-m", "pip", "download", "--no-deps", "--only-binary", ":all:",
            "--disable-pip-version-check", "--use-deprecated=legacy-certs",

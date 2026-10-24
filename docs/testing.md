@@ -203,15 +203,23 @@ The web UI (`web/`) has its own test infrastructure using **Vitest**, **Happy-DO
 ```bash
 cd web
 
-# Run all tests
+# Run all tests once and exit
 npm test
+
+# Re-run on every save (watch mode -- never terminates)
+npm run test:watch
 
 # Run tests with UI
 npm run test:ui
 
-# Run tests with coverage
+# Run all tests once with the 100% coverage gate -- the exact command CI blocks on
 npm run test:coverage
 ```
+
+`npm test` and `npm run test:coverage` both terminate: they are `vitest run`.
+Until #4209 they were bare `vitest`, which is watch mode outside CI, so the one
+documented way to answer the coverage gate locally sat on a file watcher
+forever. Watch mode is `npm run test:watch`, asked for by name.
 
 ### Test Infrastructure
 
@@ -229,8 +237,9 @@ npm run test:coverage
 
 ### Coverage Gate
 
-- `web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines) via `test.coverage.thresholds`; `npx vitest run --coverage` fails the build on any regression.
-- Both `.github/workflows/claude-code-review.yml` and `.github/workflows/validate-web-routes.yml` run tests with `--coverage` so the gate applies in CI.
+- `web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines) via `test.coverage.thresholds`; `npm run test:coverage` fails the build on any regression. Genuinely-untestable files go in `coverage.exclude` with a comment saying why — never by lowering the thresholds.
+- The gate runs in `.github/workflows/ci-tests.yml`'s `web` job, **on PR heads and on pushes to the release branch**, as the same `npm run test:coverage` a developer runs. It is a required check (`.github/required-checks.txt`), and the job self-gates on whether the diff touches `web/`.
+- `.github/workflows/web-gate-smoke.yml` is the executed evidence that the gate blocks: it plants a failing test and then an uncovered branch in the real suite and requires the real command to fail on each, then requires it to pass with the branch covered.
 - Component tests (React Testing Library + Happy-DOM) are part of the standard suite alongside infrastructure/utility tests.
 
 See `web/tests/README.md` for detailed web UI testing documentation.

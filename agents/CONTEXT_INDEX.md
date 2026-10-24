@@ -13,6 +13,7 @@ fails if it drifts. Do not hand-edit.
 | Workflow | Triggered by | Name |
 |---|---|---|
 | `acceptance-standard-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Standard Smoke |
+| `acceptance-sweep-dispatch-smoke.yml` | push, pull_request, workflow_dispatch | Acceptance Sweep Dispatch Smoke |
 | `acceptance_drain_gate.yml` | issues, workflow_run, workflow_dispatch | Acceptance Drain Gate |
 | `acceptance_plan.yml` | issues | Acceptance Plan Actions |
 | `add-to-release-issue-on-milestone.yml` | issues | Add issue to release issue on milestone assignment |
@@ -26,7 +27,7 @@ fails if it drifts. Do not hand-edit.
 | `canary-pod-reason-smoke.yml` | pull_request, push, workflow_dispatch | Canary Pod Reason Smoke |
 | `canary-rollout-smoke.yml` | pull_request, push, workflow_dispatch | Canary Rollout Smoke |
 | `canary-track-metrics-smoke.yml` | pull_request, push, workflow_dispatch | Canary Track Metrics Smoke |
-| `ci-tests.yml` | push | CI - Tests & Type Check |
+| `ci-tests.yml` | push, pull_request | CI - Tests & Type Check |
 | `claude-code-review.yml` | pull_request, issue_comment, workflow_dispatch | Claude Code Review |
 | `claude-md-binding-canary.yml` | workflow_dispatch | CLAUDE.md Binding Canary |
 | `claude.yml` | issue_comment, pull_request_review_comment, issues, pull_request_review | Claude Code |
@@ -39,6 +40,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
+| `codeql_adjudications.yml` | code_scanning_alert, workflow_dispatch | CodeQL Adjudications |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
 | `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
 | `config-sync-smoke.yml` | push, workflow_dispatch | Config Sync Smoke |
@@ -54,11 +56,13 @@ fails if it drifts. Do not hand-edit.
 | `file_phase6_issues.yml` | workflow_dispatch | File Phase 6 Issues |
 | `gh_query.yml` | workflow_dispatch | GH Query (read-only) |
 | `github-script-injection-smoke.yml` | push, pull_request, workflow_dispatch | GitHub-Script Injection Smoke |
+| `glitchtip-worker-smoke.yml` | push, pull_request, workflow_dispatch | GlitchTip Worker Consumption Smoke |
 | `handle_acceptance_failure.yml` | issue_comment | Handle Acceptance Failure |
 | `handle_improvement.yml` | issue_comment | Handle Improvement |
 | `huddle-session-smoke.yml` | push, pull_request, workflow_dispatch | Huddle Session Smoke |
 | `huddle_decision_dispatch.yml` | issue_comment | Huddle Decision Dispatch |
 | `huddle_session.yml` | issue_comment, workflow_dispatch | Review Huddle - Session |
+| `image-build-fetch-policy-smoke.yml` | pull_request, push, workflow_dispatch | Image Build Fetch Policy Smoke |
 | `issue-relationships-smoke.yml` | push, pull_request, workflow_dispatch | Issue Relationships Smoke |
 | `k3s-cloud-smoke.yml` | pull_request, push, workflow_dispatch | k3s Cloud Smoke |
 | `k8s-artifact-smoke.yml` | pull_request, push, workflow_dispatch | Kubernetes Artifact Smoke |
@@ -70,10 +74,11 @@ fails if it drifts. Do not hand-edit.
 | `list_issues_by_status.yml` | workflow_dispatch | List Issues By Status |
 | `macos-brew-smoke.yml` | pull_request, workflow_dispatch, workflow_call | macOS Brew Smoke |
 | `notify-merge-conflicts.yml` | pull_request, push, workflow_dispatch | Notify Merge Conflicts |
+| `pipefail-pipeline-smoke.yml` | push, pull_request, workflow_dispatch | Pipefail Pipeline Smoke |
 | `pr_project_status_on_close.yml` | pull_request_target | PR Project Status on Close |
 | `project-hygiene-smoke.yml` | push, pull_request, workflow_dispatch | Project Hygiene Smoke |
 | `project_workflows_dump.yml` | workflow_dispatch | Project Workflows Dump |
-| `promote_accepted_features.yml` | schedule, workflow_dispatch | Promote Accepted Features |
+| `promote_accepted_features.yml` | workflow_dispatch | Promote Accepted Features |
 | `rag-fresh-cassandra-smoke.yml` | pull_request, push, workflow_dispatch | RAG Fresh Cassandra Smoke |
 | `reconcile_closed_backlog_status.yml` | workflow_dispatch | Reconcile Closed Backlog Status |
 | `red-head-round-smoke.yml` | push, pull_request, workflow_dispatch | Red Head Round Smoke |
@@ -104,13 +109,14 @@ fails if it drifts. Do not hand-edit.
 | `stranded_residue_sweep.yml` | workflow_dispatch | Stranded Residue Sweep |
 | `support-intake-smoke.yml` | push, pull_request, workflow_dispatch | Support Intake Smoke |
 | `support_intake_guard.yml` | issues | Support Intake Guard |
-| `sweep_parked_blocked_issues.yml` | schedule, workflow_dispatch | Sweep Parked Blocked Issues |
+| `sweep_parked_blocked_issues.yml` | workflow_dispatch | Sweep Parked Blocked Issues |
 | `sweep_pr_status.yml` | schedule, workflow_dispatch | Sweep PR Status |
 | `terraform-aws-validate.yml` | pull_request, push | Terraform AWS Validate |
 | `terraform-local-smoke.yml` | pull_request, push | Terraform Local Smoke |
 | `usage_limit_retry.yml` | schedule, workflow_dispatch | Usage Limit Auto-Retry |
 | `validate-web-routes.yml` | pull_request, push | Web Validation |
 | `verify_phase6_issues.yml` | workflow_dispatch | Verify Phase 6 Issue Fields |
+| `web-gate-smoke.yml` | pull_request, push | Web Gate Smoke |
 
 ## Agent scripts (`scripts/agents/`)
 

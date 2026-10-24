@@ -251,6 +251,58 @@ a failed post-install step mid-stream and its caveats afterwards, so the old
 bound kept the headline and dropped the line that said why — and two rounds of
 diagnosis were spent on the difference.
 
+### "Could not reach the package registry" is a different answer from "failed"
+
+Installing nyxGPT fetches from package indexes — npm for the web bundle, PyPI
+for the api venv, your distro's repositories for the Docker engine — and those
+are reachable or not independently of whether anything is wrong with nyxGPT.
+So a failure that `ops` can attribute to an unreachable index is reported as
+that, and not as a broken install (#4205):
+
+```
+[FAIL] Could not reach the package registry while building nyxgpt-web:dev-3.0.1
+       npm could not reach the package registry (EAI_AGAIN): #8 23.97 npm error code EAI_AGAIN
+       This is a package-registry reachability failure, not a nyxGPT defect: the
+       build retried 5 times with backoff (2s-60s) and still could not fetch.
+       Check network/proxy/VPN reachability and the index's own status, then
+       retry with `nyxgpt ops install`.
+```
+
+Three things are true of that report and worth knowing:
+
+- **The retries already happened.** Every build and install step that fetches
+  runs under one stated policy — five attempts with a 2s–60s exponential
+  backoff — so this message means the blip outlasted them, not that retrying
+  was never tried. The policy lives in `src/nyxgpt/build_fetch_policy.py` and
+  nowhere else; `tests/unit/test_build_fetch_policy.py` fails the build if a
+  new fetching step appears without it.
+- **Retrying the install is safe and is the right move.** A failed image build
+  records no fingerprint, so the next `nyxgpt ops install` rebuilds rather than
+  skipping; nothing has to be cleaned up first.
+- **A build that is genuinely broken still says so.** A TypeScript error, a
+  missing `COPY` source, an unresolvable dependency and a `404` from the
+  registry are all reported as `docker build <image> failed` with their own
+  output. `ops` only claims "the registry was unreachable" when the output
+  contains positive evidence of it — being told to retry a failure that
+  retrying cannot fix is worse than an unhelpful message.
+
+The fetch policy also decides *whether a step succeeded*, which is not always
+what the tool says. `npm ci` exits **0** when the registry is unreachable: it
+prints `npm error Exit handler never called!`, creates one empty directory per
+dependency, and writes no `node_modules/.package-lock.json`. Taken at its word
+that produces a web image that builds, links, starts, and cannot serve. So
+every `npm ci`/`npm install` step — in `web/Dockerfile`, in the Linux systemd
+install, in the Homebrew formula, and for the repo's own web and MCP
+dependencies — checks npm's completed-reify receipt before reporting success,
+and reports a missing one as the registry failure it is.
+
+The same policy governs the install an EC2 instance runs for itself: the
+provisioning script `nyxgpt cloud deploy` renders carries it as exported
+environment plus the package managers' inline flags, from the same module.
+The instance has no checkout to read the policy from, so the numbers are
+written into the script — but written from `build_fetch_policy`, never retyped,
+which is what keeps the cloud path from drifting away from the local one.
+
 A step that checks several things reports one coherent status rather than a
 mix the reader has to reconcile (#3762):
 
@@ -264,11 +316,16 @@ mix the reader has to reconcile (#3762):
   is always its answer:
 
 ```
-[4/23] docker engine...
+[4/N] docker engine...
 [FAIL] Could not install Docker Compose automatically
 [OK] Docker daemon is reachable
-[FAIL] step 4/23 'docker engine' did not fully succeed: 1 of 3 checks failed (Could not install Docker Compose automatically)
+[FAIL] step 4/N 'docker engine' did not fully succeed: 1 of 3 checks failed (Could not install Docker Compose automatically)
 ```
+
+(`N` is the number of steps this run will perform, which depends on the flags
+it was given. It is written as `N` here deliberately: the literal `23` this
+example used to carry became wrong the next time a step was added, and
+nothing in the tree compares a documented count to the real one.)
 
 A run's summary also lists any step that took longer than a few seconds, with its duration,
 so slow steps are easy to spot after the fact:
@@ -801,16 +858,18 @@ Reports:
   Pods are running (#3989)
   ([kubernetes.md](kubernetes.md#install-modes-artifact-and---dev)).
 
-  The five data-flow lines after the readiness ones — traces, metrics, logs,
-  errors, and error-reporting credentials — are the ones that distinguish *the
-  tier is running* from *the tier is receiving*. They print here and not only
-  in the install's report because `ops status` is the command an operator runs
-  to ask whether the tier is working, and ten `1/1 ready` workloads with no
-  word about what any of them has received is exactly the state that reached
-  acceptance testing in #3990. They are skipped entirely when there is no
-  observability tier to ask. See [observability in the
-  cluster](kubernetes.md#observability-in-the-cluster) for what each line asks
-  and why the credential question has a line of its own.
+  The six data-flow lines after the readiness ones — traces, metrics, logs,
+  errors, what GlitchTip's worker *dead-lettered* on the way (`error
+  ingestion:`, #4208), and error-reporting credentials — are the ones that
+  distinguish *the tier is running* from *the tier is receiving*. They print
+  here and not only in the install's report because `ops status` is the
+  command an operator runs to ask whether the tier is working, and ten `1/1
+  ready` workloads with no word about what any of them has received is
+  exactly the state that reached acceptance testing in #3990. They are
+  skipped entirely when there is no observability tier to ask. See
+  [observability in the cluster](kubernetes.md#observability-in-the-cluster)
+  for what each line asks and why the credential question has a line of its
+  own.
 
   That section's **`Access:`** line says how the SRE UIs are reached *from
   this machine*, and it is read from the cluster rather than asserted
@@ -1515,6 +1574,15 @@ names a different major:
 - the macOS Homebrew formulas, which depend on the **versioned** `node@NN`
   keg and put that keg's `bin` first on the web service's `PATH`.
 
+`nyxgpt ops install` puts it there. A "node runtime" step runs ahead of the
+four steps that need it — the web bundle's dependencies, the MCP
+dependencies, and both native web installs — and installs the declared major
+the same way `nyxgpt ops node` does, which is the same code. Without it a
+clean host with no checkout (the repo-less install path: `pip install nyxgpt`,
+then `nyxgpt ops install`) would stop with four failures and a command to run
+by hand, which is what the Docker engine step exists to prevent for Docker.
+On a host already on the declared major it installs nothing.
+
 That last one is why `brew upgrade node` no longer changes what nyxGPT runs:
 `node@NN` is keg-only, so Homebrew does not link it into
 `$(brew --prefix)/bin`, and the service resolves it by path rather than by
@@ -1779,6 +1847,16 @@ a different store.
   the pull and the serve disagree about which store holds the model.
 - **Idempotent.** A model already in the store is reported present and nothing
   is downloaded, so a re-run over a warm machine costs one `/api/tags` request.
+- **A transient upstream failure is retried, a definite answer is not** (#4192).
+  Ollama fetches the manifest and blobs from the public model registry and
+  relays a registry failure as its own 5xx, so one blip used to fail the whole
+  install — including the required `terraform-artifact-smoke` check, on a
+  commit that had nothing to do with it. A 5xx, a timeout or a dropped stream
+  is now retried 5 times with 5s doubling to 40s (the budget
+  `k8s/statefulset-ollama.yaml` and the Compose entrypoint also use); a 404 for
+  a model that does not exist fails on the first attempt, because waiting will
+  not make it exist. Ollama resumes from the blobs it already holds, so a
+  retry re-downloads only the remainder.
 - Exits 0 when every required model is in place, 2 otherwise — which is what
   makes a provisioning script's `set -e` abort a deploy that cannot serve chat,
   rather than reporting success onto a broken machine.

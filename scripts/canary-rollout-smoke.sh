@@ -177,10 +177,10 @@ step "3/7 A real rollout at 25%: the pool GROWS for it"
 rm -f "$STATE_FILE"
 start_output="$(nyxgpt canary start --weight 25)"
 echo "$start_output"
-echo "$start_output" | grep -q '^\[OK\]' || fail "canary start failed"
-echo "$start_output" | grep -q '25% (1/4 replicas)' ||
+echo "$start_output" | grep '^\[OK\]' >/dev/null || fail "canary start failed"
+echo "$start_output" | grep '25% (1/4 replicas)' >/dev/null ||
     fail "canary start did not report the 25% split it planned"
-echo "$start_output" | grep -q 'returns to 1 replica' ||
+echo "$start_output" | grep 'returns to 1 replica' >/dev/null ||
     fail "canary start did not name the resting count it will hand back"
 assert_replicas nyxgpt-api-stable 3
 assert_replicas nyxgpt-api-canary 1
@@ -206,12 +206,12 @@ step "4/7 Promote to 50%: the pool is RE-PLANNED, not re-sliced"
 # refuse-at-zero-traffic step this line is forcing past.
 promote_output="$(nyxgpt canary promote --step 25 --force)"
 echo "$promote_output"
-echo "$promote_output" | grep -q '50% (1/2 replicas)' ||
+echo "$promote_output" | grep '50% (1/2 replicas)' >/dev/null ||
     fail "promote did not re-plan the pool down to the 2 replicas 50% needs"
 # Keeps the `--force` above honest: if this stops matching, the promote no
 # longer needed forcing and the flag must come off rather than sit there
 # waving a real no-traffic canary through in some future edit of this script.
-echo "$promote_output" | grep -q 'forced: the canary track has served no traffic' ||
+echo "$promote_output" | grep 'forced: the canary track has served no traffic' >/dev/null ||
     fail "the promote was forced but did not report forcing past the no-traffic \
 gate -- drop --force from this step (see the comment above it)"
 assert_replicas nyxgpt-api-canary 1
@@ -221,7 +221,7 @@ ok "50% costs 2 Pods, not the 4 the previous step borrowed"
 step "5/7 Rollback DEFLATES the pool back to its resting count"
 rollback_output="$(nyxgpt canary rollback)"
 echo "$rollback_output"
-echo "$rollback_output" | grep -q 'restored to its resting 1 replica' ||
+echo "$rollback_output" | grep 'restored to its resting 1 replica' >/dev/null ||
     fail "rollback did not report restoring the resting count"
 assert_replicas nyxgpt-api-canary 0
 assert_replicas nyxgpt-api-stable 1

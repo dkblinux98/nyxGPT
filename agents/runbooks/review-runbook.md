@@ -427,19 +427,39 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
 **How to run the check.**
 
 1. **Dispatch** [`code_scan_report.yml`](../../.github/workflows/code_scan_report.yml)
-   (`workflow_dispatch`, optional `ref` input) and read its run log. This is
-   the supported agent path — agent sessions cannot call the code-scanning API
-   directly (`CLAUDE.md` § Tooling). The log prints recent analyses, the open
-   alert list with `TOTAL_OPEN`, and every SARIF `codeFlow` per open alert.
+   (`workflow_dispatch`, optional `ref` input) and read its run log. The log
+   prints recent analyses, the open alert list with `TOTAL_OPEN`, and every
+   SARIF `codeFlow` per open alert, and the run URL is what this gate asks the
+   review to cite — a citable run is the point, not an access wall. The agent
+   PAT these workflows carry holds `repo`, which **does** reach
+   `/code-scanning/alerts` and the `application/sarif+json` analysis read
+   directly (verified 2026-10-24, #4222, run `40072136036`); use the direct
+   read when you only need to answer a question, and the dispatch when the
+   review has to cite the list it read.
 2. **Report `TOTAL_OPEN`** in the review body, in a `### Code Scanning`
    section, so an empty result is distinguishable from a check never run.
 3. **Cross-reference the diff.** For each open alert, check whether its
    `file:line` is in a file this PR touches.
-4. **Read the alert before classifying it.** A dismissal is a claim about the
-   whole flow to the sink, not about the line — trace it. Note the 280-character
-   cap on dismissal rationales (ledger **V-029**) and that dismissal itself is
-   a code-scanning *write* no agent token here holds: the reviewer names the
-   verdict, the owner performs it.
+4. **Read the alert before classifying it, and require the adjudication in the
+   repository.** A dismissal is a claim about the whole flow to the sink, not
+   about the line — trace it. **An accepted finding is recorded in
+   [`security/codeql-adjudications.yml`](../../security/codeql-adjudications.yml),
+   keyed to the flow, and never only in GitHub's per-alert dismissal state**
+   (ledger **D-080**): that state's identity includes the sink's *line number*,
+   so any edit that moves a dismissed sink re-raises the identical accepted
+   finding, and nothing reports it until the release ceremony's gate refuses to
+   release. What the reviewer checks is therefore the register entry — the
+   traced flow, a `reason` GitHub accepts, and an `enforced_by` test that
+   actually keeps the premise true (#4174) — not a verdict in prose;
+   [`codeql_adjudications.yml`](../../.github/workflows/codeql_adjudications.yml)
+   performs the write on the `code_scanning_alert` event, and an alert the
+   register does not match is reported and never dismissed. GitHub caps
+   `dismissed_comment` at 280 characters, which is why an entry puts a one-line
+   `headline` plus a register pointer on the alert and keeps the argument in the
+   file; the cap is checked when the register *loads*
+   (`MAX_DISMISSAL_COMMENT`, `scripts/agents/lib/codeql_adjudications.py`), so
+   an over-long entry fails the parse instead of 422-ing part-way through a run
+   with some alerts dismissed and the rest not.
 5. **When a PR claims to *close* an alert, count the flows.** An alert is one
    sink with *N* source→sink paths, and it stays open while **any** of them
    lives — `code_scan_report.yml` dumps every `codeFlow` per result for exactly
@@ -447,21 +467,27 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
    redacts the flow it happened to read is not a fix; it is a rescan away from
    the same alert with a new sink line.
 
-**Blocking conditions.** All three are Medium:
+**Blocking conditions.** All four are Medium:
 
 - an alert whose `file:line` lies in the diff, unless the review states why it
   is a false positive and traces the flow that makes it one;
 - a review that never read the list — the whole failure mode this gate exists
   to close;
-- a PR claiming to close an alert without accounting for every `codeFlow` on it.
+- a PR claiming to close an alert without accounting for every `codeFlow` on it;
+- an alert accepted rather than fixed with no entry in
+  `security/codeql-adjudications.yml` — a dismissal recorded only on the alert
+  is the **D-080** defect, and it comes back at the next line shift.
 
 **Motivating incident for the flow count (#3837, acceptance failure).** PR
-#3899 was merged claiming alert #123 fixed. It had three flows: the developer
+#3899 was merged claiming alert 123 fixed. It had three flows: the developer
 traced the one reaching the `except` branch of `/ops/release-candidate`,
 redacted it, and shipped. The other two ran through the **success** path — the
 same caught exception reaching `pypi_lookup_error` and a `blockers[]` entry in
-the `200` response — so the rescan reopened #123 at a new sink line and the
-owner failed acceptance with three words: *"#123 is still open."* Nothing in
+the `200` response — so the rescan reopened alert 123 at a new sink line and
+the owner failed acceptance with three words: *"`#123` is still open."*
+(Alert numbers are written bare here, and the owner's quote is in a code span,
+for the reason **D-080** gives: `#123` in markdown links to *issue* 123, and
+this repo's issues 21-146 are deleted.) Nothing in
 the review caught it, because the gate as first written asked only whether the
 list had been read.
 
@@ -567,6 +593,17 @@ What handles it instead:
   deadlock the gate against the review's own check run). A check that is not
   attached to the head — the usual case for a path-filtered smoke — is not
   waited for and not counted against it.
+
+**"Red head" above is live again, and was paused between 2026-08-26 and
+2026-10-10 (#4192).** A temporary owner rule made the gate decide `proceed` on
+a red head and pass the failing check names into your prompt as an
+*observation* instead, scoped "REVERT AFTER #4034". #4034 merged on
+2026-09-30 and nothing reverted it, so for ten days nothing refused a red head
+— PR #4191 merged onto `v3.0.1` with three required checks red, two of them
+real product defects, and the release branch could not be cut as a candidate.
+The refusal is back. A prompt you receive will therefore say the checks are
+green; if it instead reports a check list the gate **could not read**, that is
+still not a finding and you still must not re-read the checks.
 
 **The one CI-adjacent thing that IS your job: verifying a developer override.**
 When the failure reproduces on the base branch, the developer may submit with
@@ -938,15 +975,28 @@ the merge itself or branch/PR cleanup -- only the acceptance handoff.
 
 The parked issue moves to Acceptance Testing (and the owner is assigned)
 only once **every** blocker is complete -- merged and itself in Acceptance
-Testing or beyond (For Release). This is enforced by a sweep
+Testing or beyond: `For Release`, or `Done` once the release ceremony has
+closed its milestone out. That vocabulary lives in ONE place,
+`scripts/agents/lib/acceptance_status.py`
+(`status_has_reached_acceptance` is how the shell asks), and
+`Acceptance Failed` is deliberately not in it -- work is still owed on
+everything parked there (#4204, ledger D-066; see
+`docs/acceptance-drain-gate.md` → "What 'accepted' means"). This is enforced by a sweep
 (`sweep_parked_blocked_issues.sh`, run via
-`.github/workflows/sweep_parked_blocked_issues.yml`, every 30 min +
-`workflow_dispatch` with a `dry_run` input): it finds every parked issue and
-promotes any whose blockers have all completed, posting a promotion comment
-on each. A chain of parked issues (A blocked by B blocked by C) resolves
-transitively within one sweep run -- once C completes, B promotes in the
-same pass, which in turn makes A eligible and it promotes too, rather than
-each hop waiting for a separate 30-minute cycle.
+`.github/workflows/sweep_parked_blocked_issues.yml`, `workflow_dispatch`
+only, with a `dry_run` input): it finds every parked issue and promotes any
+whose blockers have all completed, posting a promotion comment on each. A
+chain of parked issues (A blocked by B blocked by C) resolves transitively
+within one sweep run -- once C completes, B promotes in the same pass, which
+in turn makes A eligible and it promotes too.
+
+**The sweep has no schedule** (#4201, ledger D-070; the `*/30` cron was
+removed for the reasons D-060 removed the ceremony's). The actor that
+changes what it waits on dispatches it: the merge path above calls
+`dispatch_acceptance_sweeps`, as do the release ceremony and the drain gate
+release. A board move *you* make raises no event GitHub can deliver, so that
+case is one dispatch:
+`gh workflow run sweep_parked_blocked_issues.yml --ref <release branch>`.
 
 Motivating case: #3508 was parked back to In Review by the owner, blocked by
 #3621/#3622 -- its repo-less-portability acceptance criteria are unmeetable
@@ -956,8 +1006,14 @@ until those land.
 Move the issue to "For Release" in the project board. No action needed in GitHub.
 **Gate:** an issue that anything blocks (see below) is NOT moved to
 "For Release" by hand — the promotion sweep
-(`promote_accepted_features.yml`, every 30 min) moves it automatically once
-everything blocking it, transitively, has itself been accepted (For Release).
+(`promote_accepted_features.yml`) moves it once everything blocking it,
+transitively, has itself been accepted — `For Release`, or `Done` once the
+release ceremony closed its milestone out (#4204). That sweep is
+dispatched by whoever made the last move, not polled for on a timer (#4201):
+an agent merging the last blocker dispatches it automatically, and if **you**
+move the last blocker to "For Release" on the board — which raises no event —
+one dispatch picks it up:
+`gh workflow run promote_accepted_features.yml --ref <release branch>`.
 
 ### If acceptance reveals an improvement (not a defect)
 
@@ -1077,7 +1133,8 @@ successor.
 
 **Promotion:** when everything blocking an issue reaches "For Release" —
 directly and **transitively**, so a failure filed against a failure counts —
-it is promoted to "For Release" automatically by the promotion sweep, with a
+it is promoted to "For Release" by the promotion sweep — dispatched by
+whoever made the last move, never polled for (#4201, §9 above) — with a
 comment recording which issues cleared it. If it is a reopened original, the
 same sweep assigns it back to you and **closes** it: your reopen asked a
 question, and the promotion is where it is answered. Unique-failure count per feature

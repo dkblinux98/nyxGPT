@@ -5,12 +5,18 @@
 # native blocked_by dependencies, since the owner cannot meaningfully accept
 # a feature whose acceptance criteria depend on unfinished work. This sweep
 # finds every such parked issue whose blockers have ALL completed (merged
-# and themselves in Acceptance Testing or beyond) and promotes it -- see
+# and themselves in Acceptance Testing or beyond -- `For Release`, or `Done`
+# once the release ceremony closed the milestone out, which
+# lib/acceptance_status.py answers since #4204) and promotes it -- see
 # sweep_parked_blocked_issues() in lib/gh_project.sh for the fixed-point
 # resolution loop that lets a parked blocker chain resolve transitively in
 # one run.
 #
-# Run via .github/workflows/sweep_parked_blocked_issues.yml (cron + dispatch).
+# Run via .github/workflows/sweep_parked_blocked_issues.yml, which is
+# DISPATCH-ONLY since #4201 (ledger D-070): the actor that changes a lane
+# dispatches this sweep through dispatch_acceptance_sweeps(), and the owner's
+# own board moves are covered by one deliberate
+# `gh workflow run sweep_parked_blocked_issues.yml`. There is no cron.
 #
 # ENV:
 #   DRY_RUN=1   report what would be promoted, change nothing

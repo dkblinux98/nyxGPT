@@ -30,6 +30,10 @@ set -uo pipefail
 # Env knobs exist for the smoke job, which must be able to make one gate fail
 # on purpose:
 #   NYXGPT_VERIFY_GATES         space-separated subset of the gates to run
+#                               (default: black ruff mypy pytest tsc vitest
+#                               routes -- `vitest` added by #4209, which is
+#                               the issue about a blocking gate that nothing
+#                               evaluated)
 #   NYXGPT_VERIFY_PYTEST_TARGET what pytest runs (default tests/unit/)
 #   NYXGPT_VERIFY_PYTEST_ARGS   pytest args (default: -v + coverage)
 #   NYXGPT_VERIFY_LOG_DIR       where the per-gate logs land (default /tmp)
@@ -47,7 +51,7 @@ source "${DIR}/lib/gh_project.sh"
 
 LIB_DIR="${DIR}/lib"
 LOG_DIR="${NYXGPT_VERIFY_LOG_DIR:-/tmp}"
-GATES="${NYXGPT_VERIFY_GATES:-black ruff mypy pytest tsc routes}"
+GATES="${NYXGPT_VERIFY_GATES:-black ruff mypy pytest tsc vitest routes}"
 PYTEST_TARGET="${NYXGPT_VERIFY_PYTEST_TARGET:-tests/unit/}"
 PYTEST_ARGS="${NYXGPT_VERIFY_PYTEST_ARGS:---cov=src/nyxgpt --cov-report=term-missing}"
 # One interpreter for the whole run -- the gates AND `_fail_gate`'s composition
@@ -96,7 +100,7 @@ if _gate_enabled black; then
   echo "::group::Final black format check"
   if ! "$PY" -m black --check . 2>&1 | tee "${LOG_DIR}/final_black.log"; then
     echo "::endgroup::"
-    _fail_gate black "" "$(grep -E '^would reformat|^error' "${LOG_DIR}/final_black.log" | head -20)"
+    _fail_gate black "" "$(grep -E '^would reformat|^error' "${LOG_DIR}/final_black.log" | sed -n '1,20p')"
   fi
   echo "::endgroup::"
 fi
@@ -106,7 +110,7 @@ if _gate_enabled ruff; then
   echo "::group::Final ruff verification"
   if ! "$PY" -m ruff check src/ tests/ 2>&1 | tee "${LOG_DIR}/final_ruff.log"; then
     echo "::endgroup::"
-    _fail_gate ruff "" "$(grep -E '^[^ ].*:[0-9]+:[0-9]+:|^error' "${LOG_DIR}/final_ruff.log" | head -20)"
+    _fail_gate ruff "" "$(grep -E '^[^ ].*:[0-9]+:[0-9]+:|^error' "${LOG_DIR}/final_ruff.log" | sed -n '1,20p')"
   fi
   echo "::endgroup::"
 fi
@@ -117,7 +121,7 @@ if _gate_enabled mypy; then
   # --no-incremental for the same reason as attempt 1 (see #3730).
   if ! "$PY" -m mypy --no-incremental src/ 2>&1 | tee "${LOG_DIR}/final_mypy.log"; then
     echo "::endgroup::"
-    _fail_gate mypy "" "$(grep -E 'error:' "${LOG_DIR}/final_mypy.log" | head -20)"
+    _fail_gate mypy "" "$(grep -E 'error:' "${LOG_DIR}/final_mypy.log" | sed -n '1,20p')"
   fi
   echo "::endgroup::"
 fi
@@ -131,14 +135,14 @@ if _gate_enabled pytest; then
   if ! "$PY" -m pytest "$PYTEST_TARGET" -v -rf $PYTEST_ARGS 2>&1 \
     | tee "${LOG_DIR}/final_pytest.log"; then
     echo "::endgroup::"
-    FAILED_NODES="$(grep -E '^FAILED ' "${LOG_DIR}/final_pytest.log" | sed 's/ - .*$//' | head -20)"
+    FAILED_NODES="$(grep -E '^FAILED ' "${LOG_DIR}/final_pytest.log" | sed 's/ - .*$//' | sed -n '1,20p')"
     # The count comes from pytest's own totals line, not from the lines above:
     # the short summary is what `-rf` prints, and a collection ERROR has no
     # `FAILED` line at all. Reporting "0 failing tests" for a run pytest says
     # failed is exactly the kind of confident wrong answer this issue is about.
     TOTAL="$(grep -oE '[0-9]+ failed' "${LOG_DIR}/final_pytest.log" | tail -1 | grep -oE '[0-9]+' || true)"
     if [[ -z "$FAILED_NODES" ]]; then
-      FAILED_NODES="$(grep -E '^ERROR |^E   ' "${LOG_DIR}/final_pytest.log" | head -20)"
+      FAILED_NODES="$(grep -E '^ERROR |^E   ' "${LOG_DIR}/final_pytest.log" | sed -n '1,20p')"
     fi
     _fail_gate pytest "${TOTAL:-}" "$FAILED_NODES"
   fi
@@ -150,7 +154,35 @@ if _gate_enabled tsc; then
   echo "::group::Final TypeScript verification"
   if ! (cd web && npm run type-check) 2>&1 | tee "${LOG_DIR}/final_tsc.log"; then
     echo "::endgroup::"
-    _fail_gate tsc "" "$(grep -E 'error TS|^error' "${LOG_DIR}/final_tsc.log" | head -20)"
+    _fail_gate tsc "" "$(grep -E 'error TS|^error' "${LOG_DIR}/final_tsc.log" | sed -n '1,20p')"
+  fi
+  echo "::endgroup::"
+fi
+
+# -- vitest -----------------------------------------------------------------
+# #4209. This gate was MISSING, and it is the one the issue was filed about.
+# `ci-tests.yml` labels `vitest --coverage` blocking and the config carries a
+# 100% threshold (#3266), and the only two places a change could be measured
+# against it both declined to: that job ran on pushes to the release branch
+# only, and this script -- whose own workflow step says it "Runs ALL checks
+# unconditionally on the entire codebase" -- ran six gates and not this one.
+# So #4207's two failing web tests passed Final Verification, reached review
+# green, and were found by a human running the suite by hand.
+#
+# Same command a developer runs (`npm run test:coverage`) and the same one
+# ci-tests blocks on, so the three cannot drift -- which they already had: the
+# npm script was `vitest` in watch mode and never terminated.
+# `tests/unit/test_blocking_gates_reach_pull_requests.py` holds the three to
+# one list.
+if _gate_enabled vitest; then
+  echo "::group::Final web unit tests and coverage gate"
+  if ! (cd web && npm run test:coverage) 2>&1 | tee "${LOG_DIR}/final_vitest.log"; then
+    echo "::endgroup::"
+    # Two shapes, both named: `FAIL`/`×` lines for a failing test, and the
+    # threshold line for a coverage regression -- which reports no failing
+    # test at all and would otherwise record an empty reason.
+    _fail_gate vitest "" "$(grep -E '^(ERROR: Coverage|FAIL )|✕|×|Tests  .*failed' \
+      "${LOG_DIR}/final_vitest.log" | sed -n '1,20p')"
   fi
   echo "::endgroup::"
 fi

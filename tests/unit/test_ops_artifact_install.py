@@ -387,7 +387,22 @@ def test_install_native_web_systemd_from_published_artifact(
     monkeypatch.setattr(ops.importlib.metadata, "version", lambda _n: "3.0.0rc5")
     monkeypatch.setattr(ops, "_which", lambda name: "/usr/bin/npm" if name == "npm" else None)
     monkeypatch.setattr(ops, "_run", lambda cmd, **k: _cp(0))
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **k: _cp(0))
+
+    def _fake_npm(cmd, cwd=None, **k):
+        """npm, including the receipt a completed `npm ci` writes (#4205).
+
+        ops reads `node_modules/.package-lock.json` rather than trusting npm's
+        exit status, which is 0 even when the registry was unreachable and
+        nothing was installed -- so a fake that only returns 0 fakes the
+        *broken* case and this install would (correctly) report a failed fetch.
+        """
+        if cwd and cmd[1:2] == ["ci"]:
+            node_modules = Path(cwd) / "node_modules"
+            node_modules.mkdir(parents=True, exist_ok=True)
+            (node_modules / ".package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+        return _cp(0)
+
+    monkeypatch.setattr(ops.subprocess, "run", _fake_npm)
     monkeypatch.setattr(
         ops,
         "_create_dist_tarball",

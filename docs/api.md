@@ -1966,7 +1966,7 @@ calls are opt-in query parameters.
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `probe_health` | `false` | Also make one short request to the tunneled API health endpoint. Opt-in so the polled default stays free of network calls; skipped with a reason when no tunnel is open, since a probe would only time out. |
-| `verify_host` | `false` | Also ask AWS whether the recorded resources still exist, and refresh what Cost Explorer says the EC2 Mac Dedicated Host has cost (#4136, #4181). One `DescribeHosts` plus an hourly-cached `GetCostAndUsage` when a host is recorded, and one `DescribeInstances` when the Linux substrate record names an instance — "an instance exists and is being billed" is the same claim whichever substrate it is made about. This is what makes the `mac_host` / `infra.observation` blocks AWS's answer rather than the local record read back; both report which of the two they are either way. Changes nothing in AWS. Never fails the request — expired credentials leave the blocks labelled as unconfirmed, with the reason. |
+| `verify_host` | `false` | Also ask AWS whether the recorded resources still exist, and refresh what Cost Explorer says the EC2 Mac Dedicated Host has cost (#4136, #4181). One `DescribeHosts` per Dedicated Host the machine tracks (#4200), plus an hourly-cached `GetCostAndUsage` when a host is recorded, and one `DescribeInstances` when the Linux substrate record names an instance — "an instance exists and is being billed" is the same claim whichever substrate it is made about. This is what makes the `mac_host` / `infra.observation` blocks AWS's answer rather than the local record read back; both report which of the two they are either way. Changes nothing in AWS. Never fails the request — expired credentials leave the blocks labelled as unconfirmed, with the reason. |
 
 Like the substrate read it names its source (#3804): `deploy-record` on the
 machine that ran the deploy, `local-instance` when this process *is* the
@@ -2028,6 +2028,21 @@ access path there, and the prober would be the probed.
     "web": "http://localhost:3000",
     "grafana": "http://localhost:3001"
   },
+  "mac_hosts": [
+    {
+      "host_id": "h-0abc1234",
+      "instance_type": "mac2.metal",
+      "region": "us-east-1",
+      "availability_zone": "us-east-1a",
+      "allocated_at": "2026-08-22T18:00:00+00:00",
+      "release_at": "2026-08-23T18:30:00+00:00",
+      "release_scheduled": true,
+      "release_schedule_present": true,
+      "releasable_now": false,
+      "billing": true,
+      "usable": true
+    }
+  ],
   "access_command": "nyxgpt cloud tunnel",
   "commands": {
     "deploy": "nyxgpt cloud deploy",
@@ -2054,6 +2069,20 @@ which — consumers render that instead of a blank target.
 was no tunnel to probe through; `reason` says which. That is deliberately not
 the same as `healthy: false`, which means the stack was reached and did not
 answer `200`.
+
+`mac_hosts` is **every** EC2 Mac Dedicated Host that is allocated or pending
+release, oldest allocation first; `mac_host` is the current deployment's and is
+one of them (#4200). Read the list, not the single block: a Dedicated Host bills
+until it is released and outlives the deployment that created it, so more than
+one can be outstanding — and before this list existed, a surface rendering only
+`mac_host` hid exactly the hosts that nothing was releasing. `release_scheduled`
+is the flag a previous run recorded; `release_schedule_present` is whether that
+host's own release stack is on the machine that allocated it. A consumer that
+treats the first as "it will be released" repeats the defect: scheduling a second
+host's release used to retarget the first host's schedule, leaving the flag true
+over a schedule that no longer named it. Both the CLI and the dashboard render
+the two separately, and the same `usable` / `provenance` gate applies to every
+entry.
 
 `history` is the last 20 deploys and teardowns, newest first, appended by
 `nyxgpt.cloud_deploy` itself — so a deploy run from the CLI appears here too.

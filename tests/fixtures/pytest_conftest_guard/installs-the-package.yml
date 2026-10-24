@@ -1,0 +1,13 @@
+# REPAIR B -- the suite does need app imports, and the job installs the
+# package, which brings the conftest closure's third-party modules with it.
+# The guard MUST accept this file.
+name: planted - installs the package
+on: [push]
+jobs:
+  installs-the-package:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python -m pip install --quiet --upgrade pip setuptools
+          pip install -e .
+      - run: python -m pytest tests/unit/test_something.py -v

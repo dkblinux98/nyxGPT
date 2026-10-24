@@ -31,7 +31,31 @@ class NyxgptWeb < Formula
   depends_on "node@24"
 
   def install
+    # nyxGPT's one remote-fetch policy (#4205). Set here rather than inherited
+    # because Homebrew builds under a sanitized environment, so an
+    # NPM_CONFIG_* exported by `ops install` does not reach this `npm`. The
+    # numbers are src/nyxgpt/build_fetch_policy.py's and
+    # tests/unit/test_build_fetch_policy.py fails the build if they drift.
+    ENV["NPM_CONFIG_FETCH_RETRIES"] = "5"
+    ENV["NPM_CONFIG_FETCH_RETRY_MINTIMEOUT"] = "2000"
+    ENV["NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT"] = "60000"
+    ENV["NPM_CONFIG_FETCH_TIMEOUT"] = "300000"
+
     system "npm", "ci"
+    # `system` raises on a non-zero exit, and that is not enough here: with the
+    # registry unreachable `npm ci` prints "Exit handler never called!" and
+    # exits **0**, having created an empty package directory per dependency
+    # and no `node_modules/.package-lock.json` (#4205, reproduced under
+    # `docker build --network none`). Without this the keg would build, link
+    # and start, and `next` would be missing at boot. npm's completed-reify
+    # receipt is the check.
+    receipt = buildpath/"node_modules/.package-lock.json"
+    odie <<~MSG unless receipt.file? && receipt.size.positive?
+      nyxgpt-build: remote fetch did not complete: 'npm ci' left an incomplete
+      node_modules -- the package registry was most likely unreachable.
+      Retry with `nyxgpt ops install` once the registry is reachable.
+    MSG
+
     system "npm", "run", "build"
     # Drop devDependencies now that the production build exists to slim the
     # keg. But `next start` re-reads next.config.ts at boot and needs
@@ -40,6 +64,15 @@ class NyxgptWeb < Formula
     # runtime (#3406).
     system "npm", "prune", "--omit=dev"
     system "npm", "install", "--no-save", "typescript"
+    # Same reasoning as the `npm ci` receipt above, applied to the one devDep
+    # the keg restores: exit 0 from a fetch is not evidence it fetched, and a
+    # missing `typescript` here is the #3406 crash loop at boot rather than a
+    # failed install.
+    odie <<~MSG unless (buildpath/"node_modules/typescript/package.json").exist?
+      nyxgpt-build: remote fetch did not complete: 'npm install --no-save
+      typescript' did not install typescript -- the package registry was most
+      likely unreachable. Retry with `nyxgpt ops install`.
+    MSG
     # `Dir["*"]` skips dotfiles/dotdirs -- the `.next` production build
     # output needs its own explicit copy, or `npm run start` below would
     # have nothing to serve.

@@ -53,7 +53,13 @@ WEB = REPO_ROOT / "web"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 _FROM_NODE = re.compile(r"^FROM\s+node:(\d+)[-.]", re.MULTILINE)
-_NODE_VERSION = re.compile(r"""node-version:\s*['"]?(\d+)""")
+# `node-version:` whose value is an Actions expression rather than a literal.
+# `developer_auto_implement.yml` has to use this form: it runs from the release
+# branch's definition against a checked-out WORK branch that may predate the
+# version file, so a step resolves the declaration in shell first and
+# `setup-node` consumes its output. That is still a reader -- the accompanying
+# check is that such a workflow does read the declaration file.
+_NODE_VERSION_EXPR = re.compile(r"node-version:\s*\$\{\{")
 # A workflow that runs npm against the web tier, however it gets there.
 _TOUCHES_WEB = re.compile(r"working-directory:\s*\.?/?web\b|cd\s+web\b|web/package")
 
@@ -179,7 +185,13 @@ def test_every_workflow_that_runs_npm_in_web_sets_node_up_from_the_declaration()
         # set Node up for; `setup-node` being absent entirely is the signal.
         if "actions/setup-node" not in text:
             continue
-        if f"node-version-file: '{node_runtime.NODE_VERSION_FILE}'" not in text:
+        reads_the_file = f"node-version-file: '{node_runtime.NODE_VERSION_FILE}'" in text
+        # The indirect form is a reader too, provided the version it feeds
+        # `setup-node` comes out of the declaration file in this same workflow.
+        resolves_it = bool(_NODE_VERSION_EXPR.search(text)) and (
+            node_runtime.NODE_VERSION_FILE in text
+        )
+        if not (reads_the_file or resolves_it):
             offenders.append(f"  {workflow.name}")
     assert not offenders, (
         f"nyxGPT declares Node {baseline} in {node_runtime.NODE_VERSION_FILE}; these "

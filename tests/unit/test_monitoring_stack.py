@@ -600,28 +600,40 @@ def test_glitchtip_worker_has_a_healthcheck() -> None:
     restarting it. Round 1 of this fix probed with `celery inspect ping`,
     but the pinned glitchtip:6.2.0 image doesn't ship Celery at all (it runs
     django-vtasks), so that probe failed with "celery: not found" on every
-    run (#3565 round 2) -- round 2 instead checks the mtime of the
-    `VTASKS_HEALTH_CHECK_FILE` heartbeat file that django-vtasks' `runworker`
-    rewrites every 5 seconds, via `python` (confirmed present in the
-    image), which is a real liveness check reaching the worker process
-    itself, not just the container."""
+    run (#3565 round 2).
+
+    Round 2 then checked the mtime of the `VTASKS_HEALTH_CHECK_FILE` heartbeat
+    file, and this test asserted that choice on the reasoning that a wedged
+    worker would show a stale mtime. **#4208 measured that wrong.**
+    `Worker._heartbeat_loop` runs `while self.running`, and `self.running`
+    stays true for as long as `Worker.run()` has not RETURNED -- so a worker
+    reproduced in the real broken state (consumer never ran an iteration, 0
+    tasks processed, scheduler enqueuing into a queue nothing drains) wrote a
+    heartbeat whose mtime was the current second. The probe was green on the
+    defect it existed to catch, and this test was holding it there.
+
+    So the requirement is now the stronger one it should always have been: ask
+    the CONSUMER for evidence of work. The details live with the probe --
+    k8s/observability/glitchtip-worker-ready.py and
+    tests/unit/test_glitchtip_worker_consumption.py -- and what is kept here
+    is #3565's own invariant, that something reaches the worker process rather
+    than the container, plus the two probes this image cannot run."""
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
     worker = compose["services"]["glitchtip-worker"]
 
     assert (
         "healthcheck" in worker
     ), "glitchtip-worker has no healthcheck -- self-heal can't detect a dead worker"
-    assert "celery" not in " ".join(worker["healthcheck"]["test"]), (
+    test = " ".join(worker["healthcheck"]["test"])
+    assert "celery" not in test, (
         "the pinned glitchtip:6.2.0 image has no celery binary/module -- "
         "a `celery` probe fails with 'not found' on every run (#3565 round 2)"
     )
-
-    assert "VTASKS_HEALTH_CHECK_FILE" in worker["environment"]
-    test = " ".join(worker["healthcheck"]["test"])
-    assert "python" in test
-    assert "VTASKS_HEALTH_CHECK_FILE" in test, (
-        "the probe must read the path via the VTASKS_HEALTH_CHECK_FILE env var "
-        "(as django-vtasks itself does), not a hardcoded path that could drift from it"
+    assert "python" in test, "`python` is the one interpreter confirmed present in this image"
+    assert "VTASKS_HEALTH_CHECK_FILE" not in test, (
+        "the heartbeat file is written for as long as the event loop turns, which includes "
+        "the wedged state it was supposed to detect (#4208) -- probe the consumer's own "
+        "counters instead"
     )
 
 

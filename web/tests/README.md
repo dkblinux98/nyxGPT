@@ -13,18 +13,26 @@ The test infrastructure uses:
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all tests once and exit
 npm test
+
+# Re-run on every save (watch mode -- never terminates)
+npm run test:watch
 
 # Run tests with UI
 npm run test:ui
 
-# Run tests with coverage
+# Run all tests once with the 100% coverage gate -- the exact command CI blocks on
 npm run test:coverage
 
-# Run specific test file
-npx vitest tests/setup.test.ts
+# Run a specific test file once
+npx vitest run tests/setup.test.ts
 ```
+
+`npm test` and `npm run test:coverage` terminate: both are `vitest run`. Until
+#4209 they were bare `vitest` — watch mode outside CI — so the one documented
+way to answer the coverage gate locally never printed a verdict. Watch mode is
+`npm run test:watch`, asked for by name.
 
 ## Writing Tests
 
@@ -71,19 +79,18 @@ export const handlers = [
 
 ## Node Version Compatibility
 
-**Current Configuration:**
-- Node — the major declared in `.nvmrc`, the same one CI, the container image
-  and the Homebrew keg use ([The declared Node.js version](../../docs/ops.md#the-declared-nodejs-version)).
-  Not "the system version": `engines` in `web/package.json` pins it and
-  `engine-strict=true` in `web/.npmrc` makes `npm install` refuse any other,
-  so the suite cannot be run on a Node the bundle was not built with (#4194).
-- happy-dom v20.x
-- Vitest v4.x
-- React Testing Library v16.x
+**Current Configuration** — read it from the living source, not from here:
 
-**Note:** engine warnings from a transitive package are no longer something to
-work around here — a mismatch against the declared major is a hard failure, and
-`nyxgpt ops node` installs the right one.
+- The Node version every surface runs on is `.nvmrc`, nyxGPT's one Node
+  declaration ([The declared Node.js version](../../docs/ops.md#the-declared-nodejs-version)).
+  CI reads it with `node-version-file`, the container image and the macOS
+  Homebrew keg take the same major, and `tests/unit/test_node_version_declaration.py`
+  fails the build if any surface names another (#4194).
+- The test-stack versions (`happy-dom`, `vitest`, `@testing-library/*`) are the declared ranges in `web/package.json`; the exact resolved versions are in `web/package-lock.json`.
+
+This section used to restate those version numbers, and they rotted: it still claimed "happy-dom v20.x" after #4221 moved the floor to `^21.0.4` to clear GHSA-834v-8h66-3h79, and it named a `node-version` literal in `ci-tests.yml` that #4194 replaced with a read of `.nvmrc`. Security remediation moves these ranges on the advisory's schedule, not on a documentation schedule, so a copy here is wrong by default. The floors are enforced by `tests/unit/test_npm_dependency_floors.py`, which reads the manifests rather than a prose copy of them.
+
+**Note:** a wrong Node major is no longer a warning to work around. `engines` in `web/package.json` pins the major and `engine-strict=true` in `web/.npmrc` makes `npm install` refuse any other, so the suite cannot be run on a Node the bundle was not built with; `nyxgpt ops node` installs the right one. Engine warnings a *transitive* package emits about itself are its own `engines` field's business and remain warnings.
 
 ## Known Limitations
 
@@ -92,7 +99,9 @@ work around here — a mismatch against the declared major is a hard failure, an
 
 ## Coverage Gate
 
-`web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines). Any regression fails `npx vitest run --coverage`, which both `claude-code-review.yml` and `validate-web-routes.yml` run in CI. Genuinely-untestable files (generated/config) are documented in `coverage.exclude` with a comment rather than lowering the threshold.
+`web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines). Any regression fails `npm run test:coverage`. Genuinely-untestable files (generated/config) are documented in `coverage.exclude` with a comment rather than lowering the threshold.
+
+The gate is evaluated by `ci-tests.yml`'s `web` job — **on PR heads and on pushes to the release branch** (#4209) — as the same `npm run test:coverage`, and it is a required check (`.github/required-checks.txt`). It was previously `if: github.ref == RELEASE_BRANCH` on a workflow with no `pull_request` trigger, so a web regression was invisible for the whole life of the PR that introduced it and surfaced as a red release branch attributed to whichever change touched `web/` next. `web-gate-smoke.yml` is the executed evidence that the gate now blocks, proven in both directions.
 
 ## Future Improvements
 

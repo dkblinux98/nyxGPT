@@ -4,14 +4,42 @@
 # names a different one. Bump the declaration, not this line.
 FROM node:24-alpine AS deps
 WORKDIR /app
+# --- nyxGPT remote-fetch policy (#4205). Generated from
+# src/nyxgpt/build_fetch_policy.py, which states the reasoning;
+# tests/unit/test_build_fetch_policy.py fails the build if these drift or
+# if a new fetching step appears without them. Do not edit by hand.
+ENV NPM_CONFIG_FETCH_RETRIES=5
+ENV NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=2000
+ENV NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=60000
+ENV NPM_CONFIG_FETCH_TIMEOUT=300000
+ENV PIP_RETRIES=5
+ENV PIP_TIMEOUT=30
+# --- end nyxGPT remote-fetch policy
 # `.npmrc` with the manifests, not left behind: it carries `engine-strict`, so
 # without it the one `npm ci` that builds the shipped bundle is the one install
-# that would downgrade an `engines` mismatch back to a warning.
+# that would downgrade an `engines` mismatch back to a warning (#4194).
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci
+# `npm ci` is not trustworthy on its own here: with the registry unreachable it
+# prints "npm error Exit handler never called!" and **exits 0**, having created
+# 520 empty package directories and no `node_modules/.package-lock.json`. That
+# made a registry blip a green build over an empty dependency tree, cached by
+# BuildKit for every later build on the machine (#4205). So the step asserts
+# npm's own completed-reify receipt; see build_fetch_policy.npm_install_run_step.
+RUN npm ci; status=$?; if [ $status -ne 0 ] || ! test -s node_modules/.package-lock.json; then echo "nyxgpt-build: remote fetch did not complete: 'npm ci' left an incomplete node_modules (exit $status) -- the package registry was most likely unreachable" >&2; exit 1; fi
 
 FROM node:24-alpine AS builder
 WORKDIR /app
+# --- nyxGPT remote-fetch policy (#4205). Generated from
+# src/nyxgpt/build_fetch_policy.py, which states the reasoning;
+# tests/unit/test_build_fetch_policy.py fails the build if these drift or
+# if a new fetching step appears without them. Do not edit by hand.
+ENV NPM_CONFIG_FETCH_RETRIES=5
+ENV NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=2000
+ENV NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=60000
+ENV NPM_CONFIG_FETCH_TIMEOUT=300000
+ENV PIP_RETRIES=5
+ENV PIP_TIMEOUT=30
+# --- end nyxGPT remote-fetch policy
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # NEXT_PUBLIC_* variables are inlined into the client bundle at build time,
@@ -33,6 +61,11 @@ ENV NEXT_PUBLIC_NYXGPT_TRACING_ENABLED=${NEXT_PUBLIC_NYXGPT_TRACING_ENABLED}
 # capture to the local GlitchTip instance -- see docs/docker-compose.md.
 ARG NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN=""
 ENV NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN=${NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN}
+# Resolves from the node_modules copied above, but still reaches the network
+# for the platform `@next/swc` binary and anything `next build` downloads, so
+# it runs under the same fetch policy (the ENV block on this stage). No
+# completion assertion: unlike `npm ci`, `next build` reports a failed fetch
+# through its exit status, so the step already goes red (#4205).
 RUN npm run build
 
 FROM node:24-alpine AS runner

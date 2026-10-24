@@ -152,8 +152,8 @@ refute "no source is unstamped once the corpus carries a stamp" "$(cat "$WORK/b.
 refute "the corpus no longer renders as unknown" "$rendered_b" "Issue corpus as of unknown"
 check "the corpus renders its own as-of time" "$rendered_b" "Issue corpus as of "
 # The stamped object shape must be read as the same corpus, not an empty one.
-a_totals="$(grep -o "'issues': [0-9]*" "$WORK/a.log" | head -1)"
-b_totals="$(grep -o "'issues': [0-9]*" "$WORK/b.log" | head -1)"
+a_totals="$(grep -o "'issues': [0-9]*" "$WORK/a.log" | sed -n '1p')"
+b_totals="$(grep -o "'issues': [0-9]*" "$WORK/b.log" | sed -n '1p')"
 check "both corpus shapes yield the same issue count ($a_totals)" "$b_totals" "$a_totals"
 
 echo

@@ -5313,21 +5313,38 @@ def test_vendor_tree_always_excludes_caches_even_without_caller_excludes(tmp_pat
 # --- _ensure_web_deps ---
 
 
-def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0):
-    """A `subprocess.run` stand-in for the `npm ci`/`npm install`/`node -p` trio.
+def _fake_subprocess_run(*, ci_rc=0, ci_stderr="", install_rc=0, resolve_rc=0, write_receipt=True):
+    """A stand-in for the `npm`/`node` subprocesses `_ensure_web_deps` runs.
 
-    Matched on the *basename* and accepting `env=`, both because of #4194:
-    `_ensure_web_deps` now invokes the DECLARED toolchain, so the argv carries
-    an absolute `/usr/bin/npm` and an explicit environment rather than the bare
-    name and an inherited one.
+    Matched on the *basename*, and tolerant of extra keywords, both because of
+    #4194: `_ensure_web_deps` now invokes the DECLARED toolchain, so the argv
+    carries an absolute `/usr/bin/npm` and an explicit environment rather than
+    the bare name and an inherited one.
+
+    `write_receipt` exists because real npm writes
+    `node_modules/.package-lock.json` when, and only when, a reify completes --
+    and #4205 made ops read exactly that as the post-condition for a fetch.
+    Passing `write_receipt=False` with `ci_rc=0` reproduces the defect: `npm
+    ci` claiming success over an empty tree, which is what the registry being
+    unreachable actually looks like.
     """
 
-    def _run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    def _run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
+        def _complete(rc):
+            if rc == 0 and write_receipt and cwd:
+                node_modules = Path(cwd) / "node_modules"
+                node_modules.mkdir(parents=True, exist_ok=True)
+                (node_modules / ".package-lock.json").write_text(
+                    '{"packages": {}}', encoding="utf-8"
+                )
+
         tool = os.path.basename(cmd[0])
         rest = cmd[1:]
         if tool == "npm" and rest[:1] == ["ci"]:
+            _complete(ci_rc)
             return subprocess.CompletedProcess(cmd, ci_rc, stdout="", stderr=ci_stderr)
         if tool == "npm" and rest[:1] == ["install"]:
+            _complete(install_rc)
             return subprocess.CompletedProcess(
                 cmd, install_rc, stdout="", stderr="npm install failed"
             )
@@ -5451,6 +5468,34 @@ def test_ensure_web_deps_npm_ci_succeeds(monkeypatch, tmp_path):
     results = ops._ensure_web_deps()
     assert results[0].ok is True
     assert "npm ci" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_web_deps_npm_ci_exit_zero_over_an_empty_tree_is_a_failure(monkeypatch, tmp_path):
+    """The #4205 defect on the native path: exit 0, nothing installed.
+
+    Reproduced for real under `docker build --network none`: with the registry
+    unreachable `npm ci` prints "Exit handler never called!", creates one
+    empty directory per dependency, writes no
+    `node_modules/.package-lock.json`, and **exits 0**. Before this check ops
+    reported "Installed web deps via npm ci" and moved on.
+    """
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
+    monkeypatch.setattr(
+        ops.subprocess,
+        "run",
+        _fake_subprocess_run(ci_rc=0, resolve_rc=1, write_receipt=False),
+    )
+
+    results = ops._ensure_web_deps()
+    assert results[0].ok is False
+    # And reported as what it was, not as a mysterious missing dependency.
+    assert "Could not reach the package registry" in results[0].message
+    assert "not a nyxGPT defect" in results[0].details
 
 
 @pytest.mark.unit
@@ -5604,14 +5649,19 @@ def test_ensure_web_deps_can_resolve_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    # `env=` and basenames: the declared toolchain is invoked absolutely since
-    # #4194, so a stub written against the bare names never matches.
-    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    # Basenames: the declared toolchain is invoked absolutely since #4194, so a
+    # stub written against the bare names never matches.
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         tool = os.path.basename(cmd[0])
         if tool == "node":
             raise OSError("node vanished")
         if tool == "npm" and cmd[1:2] == ["ci"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="network error")
+            # Deliberately not "network error", which #4205's classifier would
+            # (correctly) attribute to the registry and report differently.
+            # This test is about `_can_resolve` swallowing an exception.
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="npm error code ELIFECYCLE"
+            )
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
@@ -5628,7 +5678,7 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         raise OSError("exploded")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5640,6 +5690,21 @@ def test_ensure_web_deps_handles_exception(monkeypatch, tmp_path):
 
 
 # --- _ensure_mcp_deps ---
+
+
+def _mcp_npm_success(cmd, cwd):
+    """A successful `npm ci`/`npm install`, receipt included.
+
+    `node_modules/.package-lock.json` is npm's completed-reify receipt, and
+    since #4205 ops reads it rather than trusting npm's exit status -- which is
+    0 even when the registry was unreachable and nothing was installed. A fake
+    that returns 0 without writing it is a fake of the *broken* case.
+    """
+    if cwd:
+        node_modules = Path(cwd) / "node_modules"
+        node_modules.mkdir(parents=True, exist_ok=True)
+        (node_modules / ".package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    return subprocess.CompletedProcess(cmd, 0)
 
 
 @pytest.mark.unit
@@ -5695,9 +5760,7 @@ def test_ensure_mcp_deps_install_succeeds(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True, env=None: (
-            subprocess.CompletedProcess(cmd, 0)
-        ),
+        lambda cmd, cwd=None, **kwargs: _mcp_npm_success(cmd, cwd),
     )
 
     results = ops._ensure_mcp_deps()
@@ -5713,8 +5776,8 @@ def test_ensure_mcp_deps_install_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops.subprocess,
         "run",
-        lambda cmd, cwd=None, text=True, capture_output=True, env=None: (
-            subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        lambda cmd, cwd=None, **kwargs: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="boom"
         ),
     )
 
@@ -5730,7 +5793,7 @@ def test_ensure_mcp_deps_install_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/npm")
 
-    def raise_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    def raise_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         raise OSError("boom")
 
     monkeypatch.setattr(ops.subprocess, "run", raise_run)
@@ -5750,9 +5813,9 @@ def test_ensure_mcp_deps_uses_npm_ci_when_lockfile_present(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         seen_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+        return _mcp_npm_success(cmd, cwd)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
@@ -5772,9 +5835,9 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 
     seen_cmd = []
 
-    def fake_run(cmd, cwd=None, text=True, capture_output=True, env=None):
+    def fake_run(cmd, cwd=None, text=True, capture_output=True, **kwargs):
         seen_cmd.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+        return _mcp_npm_success(cmd, cwd)
 
     monkeypatch.setattr(ops.subprocess, "run", fake_run)
 
@@ -11506,6 +11569,51 @@ def test_glitchtip_secrets_doctor_issues_ok_when_token_present_and_grafana_runni
     assert ops._glitchtip_secrets_doctor_issues() == []
 
 
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_carry_no_secret_value(tmp_path, monkeypatch):
+    """The premise CodeQL alert #145 is dismissed on (#4222).
+
+    `py/clear-text-logging-sensitive-data` taints this function's whole return
+    value because its NAME contains "secrets", and follows it into `doctor()`'s
+    `print(f"- {i}")` and its `logger.warning`. The dismissal recorded in
+    `security/codeql-adjudications.yml` asserts the finding is a false
+    positive: the strings are built from a directory path, `getpass.getuser()`
+    and a token file PATH, and the token file is never read at all.
+
+    That premise is a claim about code, so it is checked rather than asserted
+    (#4174). A real token value sits on disk while every reachable finding is
+    provoked, and none of them may contain it. Tested at the source function
+    rather than through `doctor()` because this is where the flow starts and
+    where a future edit would introduce the value -- `doctor` only forwards
+    whatever strings it is handed, which the tests above already pin.
+    """
+    secret = "gt-live-adjudication-canary-0f1e2d3c"  # noqa: S105  # pragma: allowlist secret
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(ops, "_which", lambda _prog: "/usr/bin/docker")
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "glitchtip-grafana-token").write_text(secret, encoding="utf-8")
+
+    secrets_dir.chmod(0o500)
+    try:
+        unwritable = ops._glitchtip_secrets_doctor_issues()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    (secrets_dir / "glitchtip-grafana-token").unlink()
+    missing_token = ops._glitchtip_secrets_doctor_issues()
+
+    # Not vacuous: both reachable findings actually fired.
+    assert len(unwritable) == 1, unwritable
+    assert "not writable" in unwritable[0]
+    assert len(missing_token) == 1, missing_token
+    assert "glitchtip-grafana-token" in missing_token[0]
+
+    for issue in [*unwritable, *missing_token]:
+        assert secret not in issue, f"the token value reached a doctor finding: {issue}"
+
+
 def _write_error_tracking_config(path, *, enabled=True, dsn="http://key@localhost:8080/1"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -13198,7 +13306,10 @@ def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._build_and_load_k8s_image(_K8S_API_IMAGE)
     assert results[0].ok is False
-    assert "docker build failed" in results[0].message
+    # Names the image, like the other three build sites: all four now report
+    # through `_image_build_failure_result` (#4205), and "docker build failed"
+    # on a path that builds two images said nothing about which.
+    assert f"docker build {_K8S_API_IMAGE} failed" in results[0].message
 
 
 @pytest.mark.unit
@@ -15659,7 +15770,17 @@ def test_ops_install_default_verbose_prints_step_announcements(capsys):
         )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[1/23] sync packaged ops resources..." in out
+    # The denominator is DERIVED, not frozen. `[1/23]` was a copy of a number
+    # `install()` computes, and it went stale the moment #4194 added the `node
+    # runtime` step -- while saying nothing about whether the announcements are
+    # numbered correctly, which is what this test is actually about.
+    announcements = re.findall(r"^\[(\d+)/(\d+)\] (.+)\.\.\.$", out, re.MULTILINE)
+    assert announcements, f"no step announcements were printed at all:\n{out}"
+    first_index, total, first_label = announcements[0]
+    assert (first_index, first_label) == ("1", "sync packaged ops resources")
+    assert [index for index, _, _ in announcements] == [
+        str(n) for n in range(1, int(total) + 1)
+    ], f"the step announcements are not 1..{total} in order: {announcements}"
 
 
 @pytest.mark.unit

@@ -38,7 +38,15 @@
 # old data converges on the new storage instead of needing a separate
 # backfill. Nothing writes prose markers any more.
 #
-# Run via .github/workflows/promote_accepted_features.yml (cron + dispatch).
+# Run via .github/workflows/promote_accepted_features.yml, which is
+# DISPATCH-ONLY since #4201 (ledger D-070): the actor that changes a lane
+# dispatches this sweep, and the owner's own board moves are covered by one
+# deliberate `gh workflow run promote_accepted_features.yml`. There is no
+# cron. That is why the promotion loop below runs to a FIXED POINT -- the
+# `*/30` cron was doubling as the cascade iterator, resolving one hop per
+# tick, and with the poll gone a chain has to converge inside one run (the
+# same property sweep_parked_blocked_issues() has always had, for the same
+# reason).
 #
 # ENV:
 #   DRY_RUN=1   report what would be promoted/linked, change nothing
@@ -94,30 +102,74 @@ if [[ "$(jq 'length' <<<"$blockers_json")" == "0" ]]; then
   exit 0
 fi
 
+# Promotion runs to a fixed point (#4201). Promoting #A to For Release can
+# complete #B's gate, and until the cron was removed that second hop simply
+# waited for the next tick -- the poll was the iterator. Each pass re-reads
+# the blockers' Status, so a chain of any length resolves in one run, and
+# the loop stops on the first pass that promotes nothing (an upper bound of
+# one pass per candidate plus one is kept as a hard stop, so a bug here
+# cannot spin).
+#
+# Promotions made THIS run are recorded in `promoted_status` and consulted
+# before the live read, exactly as sweep_parked_blocked_issues() does with
+# its `resolved` cache: the Projects v2 write and the read behind
+# issue_status() are not guaranteed read-after-write consistent, and a
+# same-run chain must not depend on that.
 promoted=0
+declare -A promoted_this_run=()
+declare -A promoted_status=()
+healed=0
+max_passes=$(($(jq 'length' <<<"$blockers_json") + 1))
+
+# Status of a gate blocker, preferring what this run already did to it.
+blocker_status() {
+  local n="$1"
+  if [[ -n "${promoted_status[$n]:-}" ]]; then
+    echo "${promoted_status[$n]}"
+  else
+    issue_status "$n"
+  fi
+}
+
+for ((pass = 1; pass <= max_passes; pass++)); do
+pass_promoted=0
 while IFS= read -r feature; do
+  # Plain `if`, per this file's convention for a bare test (see the note at
+  # the promotion comment below).
+  if [[ -n "${promoted_this_run[$feature]:-}" ]]; then
+    continue
+  fi
   mapfile -t direct < <(jq -r --arg f "$feature" '.[$f][]' <<<"$blockers_json")
 
   # Heal missing native links (idempotent). A historical issue resolved
   # through the prose fallback gets a real relationship here, which is the
   # one-time backfill: after this sweep runs, its gate is native.
-  for blocker in "${direct[@]}"; do
-    if [[ "$DRY_RUN" == "1" ]]; then
-      log "DRY_RUN: would ensure #$blocker is marked as blocking #$feature"
-    elif mark_issue_blocked_by "$feature" "$blocker"; then
-      log "#$blocker is marked as blocking #$feature"
-    else
-      log "[warn] Could not mark #$blocker as blocking #$feature"
-    fi
-  done
+  #
+  # First pass only: the write is idempotent, but re-issuing it on every
+  # pass would multiply the sweep's API cost by the chain length for no
+  # effect -- the links a later pass could need are already native by then.
+  if [[ "$healed" == "0" ]]; then
+    for blocker in "${direct[@]}"; do
+      if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY_RUN: would ensure #$blocker is marked as blocking #$feature"
+      elif mark_issue_blocked_by "$feature" "$blocker"; then
+        log "#$blocker is marked as blocking #$feature"
+      else
+        log "[warn] Could not mark #$blocker as blocking #$feature"
+      fi
+    done
+  fi
 
   # An escalated issue is the owner's (#4134). Promoting it to For Release
   # and closing it -- which is what this sweep does to a reopened original --
   # would answer a question the owner is still holding. It becomes a
-  # candidate again the moment they restore its real label, and the sweep is
-  # a cron, so nothing is lost by waiting.
+  # candidate again the moment they restore its real label; since #4201 that
+  # restore is a board/label action no event reports, so the owner's one
+  # dispatch (`gh workflow run promote_accepted_features.yml`) is what picks
+  # it up. Nothing is lost by waiting -- only the sweep that notices it is
+  # now asked for rather than armed.
   if [[ "$(issue_escalation_state "$feature")" == "yes" ]]; then
-    log "#$feature is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134) -- not promoted. It returns to this sweep when the owner restores its real label."
+    log "#$feature is escalated to @${HUMAN_OWNER:-the owner} ('${ESCALATION_LABEL}', #4134) -- not promoted. It returns to this sweep when the owner restores its real label and dispatches it."
     continue
   fi
 
@@ -154,7 +206,7 @@ while IFS= read -r feature; do
           continue
           ;;
         *)
-          log "[warn] #$feature could not be classified (rework vs original) -- leaving it in '$FAILED_STATUS' for the next sweep"
+          log "[warn] #$feature could not be classified (rework vs original) -- leaving it in '$FAILED_STATUS' for the next dispatch of this sweep"
           continue
           ;;
       esac
@@ -176,11 +228,26 @@ while IFS= read -r feature; do
 
   all_accepted=1
   for blocker in "${gate[@]}"; do
-    astatus="$(issue_status "$blocker")"
-    if [[ "$astatus" != "$STATUS_FOR_RELEASE" ]]; then
+    astatus="$(blocker_status "$blocker")"
+    # "Has this blocker been accepted?" is asked of the one vocabulary in
+    # lib/acceptance_status.py (#4204, D-066). It used to be `!=
+    # "$STATUS_FOR_RELEASE"`, which read a blocker the release ceremony had
+    # moved to `Done` as unaccepted -- and since nothing moves an issue out of
+    # `Done`, whatever it blocked was unpromotable permanently.
+    # `|| rc=$?`, never a bare call: under `set -e` a false test standing as
+    # the whole statement would exit the sweep (the same trap this file's
+    # other plain-`if` notes are about).
+    rc=0
+    status_is_accepted "$astatus" || rc=$?
+    if [[ "$rc" == "2" ]]; then
+      log "[warn] Could not read the accepted-status vocabulary -- holding #$feature (blocker #$blocker is '$astatus')"
+      all_accepted=0
+      break
+    fi
+    if [[ "$rc" != "0" ]]; then
       # Not promotable -> nothing moves. A parked feature stays exactly
       # where the owner put it, in either lane (#3780).
-      log "#$feature waits in '$fstatus': blocker #$blocker is '$astatus' (needs '$STATUS_FOR_RELEASE')"
+      log "#$feature waits in '$fstatus': blocker #$blocker is '$astatus' (needs one of: $(accepted_statuses_json | jq -r 'join(", ")'))"
       all_accepted=0
       break
     fi
@@ -192,6 +259,13 @@ while IFS= read -r feature; do
     if [[ "$fstate" == "OPEN" ]]; then
       log "DRY_RUN: would assign #$feature to @${HUMAN_OWNER} and close it (D-042)"
     fi
+    # The simulated promotion is recorded too, so a dry run reports the
+    # whole cascade a real run would perform rather than only its first
+    # hop -- the same choice sweep_parked_blocked_issues() makes.
+    promoted_this_run["$feature"]=1
+    promoted_status["$feature"]="$STATUS_FOR_RELEASE"
+    promoted=$((promoted + 1))
+    pass_promoted=$((pass_promoted + 1))
     continue
   fi
 
@@ -225,7 +299,17 @@ while IFS= read -r feature; do
   gh issue comment "$feature" --repo "${REPO_OWNER}/${REPO_NAME}" --body \
     "✅ **Scrummaster Agent**: every issue blocking this one (${gate_refs%, }) has been accepted (For Release) — promoting this issue to **For Release**. Blocking is read from GitHub's native relationships, transitively (owner decision 2026-08-12, #3731).${from_note}${closed_note}"
   log "Promoted #$feature from '$fstatus' to '$STATUS_FOR_RELEASE' (blockers accepted: ${gate[*]})"
+  promoted_this_run["$feature"]=1
+  promoted_status["$feature"]="$STATUS_FOR_RELEASE"
   promoted=$((promoted + 1))
+  pass_promoted=$((pass_promoted + 1))
 done < <(jq -r 'keys[]' <<<"$blockers_json")
+
+healed=1
+if [[ "$pass_promoted" == "0" ]]; then
+  break
+fi
+log "Pass ${pass} promoted ${pass_promoted} issue(s) -- re-checking for a cascade"
+done
 
 log "Done. Promoted ${promoted} issue(s)."

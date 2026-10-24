@@ -313,6 +313,20 @@ jobs:
       - name: Pending is pending, unschedulable is a failure
         run: python3 scripts/k8s-pod-state-smoke.py
 
+      # The 7e ingestion wait, executed on Linux in seconds (#4192). It lives
+      # in THIS job rather than a new required check because the decision it
+      # measures is a shell function of the smoke script this job already
+      # covers, and the cluster-bound job that runs it for real cannot say
+      # which of the three states it ended in -- that is the whole repair.
+      # `--noconftest`: the suite needs no app import, and the root
+      # `tests/conftest.py` closure reaches `psutil`
+      # (scripts/agents/lib/pytest_conftest_guard.py enforces the choice).
+      - name: The GlitchTip wait ends on a condition, not a deadline (#4192)
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q -p no:cacheprovider --noconftest --no-header \
+            tests/unit/test_glitchtip_wait_condition.py
+
       - name: Tear down the smoke cluster
         if: always()
         run: kind delete cluster --name nyxgpt-local || true

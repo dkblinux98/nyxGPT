@@ -191,7 +191,8 @@ _assert_contains "the missing token is named" "$err" "Ceremony token not configu
 _assert_eq "no ceremony runs without a token" "" "$(cat "$RAN_FILE")"
 
 # Test 8: the marker comment cannot be posted -> refuse to start unclaimed.
-# (starting anyway would let the next poll fire a second ceremony)
+# (starting anyway would let a second dispatch fire a second ceremony -- the
+#  `*/15` poll this used to name was removed by D-060)
 cat >"$WORK/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 args="$*"

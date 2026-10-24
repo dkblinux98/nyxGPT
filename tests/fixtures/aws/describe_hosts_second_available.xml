@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A SECOND Dedicated Host, allocated from the same machine and also still
+     inside its 24-hour minimum (#4200).
+
+     Recorded alongside describe_hosts_available.xml rather than folded into it
+     because EC2 answers `DescribeHosts(HostIds=[one])` with that one host, and
+     the question #4200 asks is precisely what happens when there is more than
+     one: the deferred release used a single Terraform state file and a single
+     fixed resource-name prefix, so scheduling this host's release retargeted
+     the other host's schedule and left it billing with nothing to stop it.
+
+     Same shape, different id. NOTE: no double hyphen anywhere in this comment.
+     XML forbids one inside a comment, and botocore rejects the whole document
+     when it meets one, which reads downstream as "AWS could not be asked"
+     rather than as a malformed fixture. -->
+<DescribeHostsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>9b2e71c3-55ad-4f80-91aa-recorded4200</requestId>
+  <hostSet>
+    <item>
+      <hostId>h-0bbb2222bbbb2222b</hostId>
+      <state>available</state>
+      <availabilityZone>us-east-1a</availabilityZone>
+      <autoPlacement>off</autoPlacement>
+      <allocationTime>2026-09-30T15:49:43.000Z</allocationTime>
+      <hostProperties>
+        <instanceFamily>mac2</instanceFamily>
+        <instanceType>mac2.metal</instanceType>
+      </hostProperties>
+      <availableCapacity>
+        <availableInstanceCapacity>
+          <item>
+            <instanceType>mac2.metal</instanceType>
+            <availableCapacity>1</availableCapacity>
+            <totalCapacity>1</totalCapacity>
+          </item>
+        </availableInstanceCapacity>
+      </availableCapacity>
+    </item>
+  </hostSet>
+</DescribeHostsResponse>

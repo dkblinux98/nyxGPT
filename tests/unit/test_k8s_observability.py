@@ -2586,6 +2586,14 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
                 "prometheus": (0, '{"data":{"activeTargets":[{"health":"up"}]}}'),
                 "loki": (0, '{"data":[]}'),
                 "issues": (0, "[]"),
+                # The worker's queues (#4208). A healthy-but-idle stack has
+                # dead-lettered nothing and has nothing waiting, which is the
+                # state this scenario is describing -- so this line is one of
+                # the ones that must come back GREEN while the tier as a whole
+                # has received nothing. A worker losing events is a different
+                # answer with a different label, covered in
+                # tests/unit/test_glitchtip_worker_consumption.py.
+                "LLEN": (0, "0\n"),
                 "cat": (0, f"{ops.GRAFANA_GLITCHTIP_TOKEN_PLACEHOLDER}\n"),
             }
         ),
@@ -2605,6 +2613,11 @@ def test_health_reports_receiving_alongside_running(monkeypatch) -> None:
         "observability logs: Loki has received nothing",
         "observability errors: GlitchTip has received no nyxGPT errors yet",
     ]
+    # ...and `error ingestion:` is green rather than `[NO DATA]`, deliberately
+    # (#4208): "nothing has been dead-lettered" is a real, complete answer,
+    # unlike "nothing has arrived yet". The two are different questions even
+    # when both queues are empty.
+    assert labels["observability error ingestion: no ingestion task has been dead-lettered"] == "OK"
     # The GlitchTip placeholder is a misconfiguration rather than an empty
     # backend, so it carries the louder label (#3956) -- on the CREDENTIALS
     # line, which is the one that asks the question it answers. Neither label

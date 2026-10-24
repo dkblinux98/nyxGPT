@@ -525,7 +525,8 @@ TIP=$(git rev-parse --verify -q "origin/${REL_BRANCH}" 2>/dev/null || true)
 if [[ -n "$TIP" ]]; then
   prereq release-branch gate true "release tip ${REL_BRANCH} -> ${TIP}"
   # version sanity on the branch tip
-  PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" | awk -F'"' '/^version =/{print $2; exit}')
+  PY_VER=$(git show "origin/${REL_BRANCH}:pyproject.toml" \
+    | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
   if [[ "$PY_VER" == "$VERSION" ]]; then
     prereq pyproject-version gate true "pyproject version on the tip = ${VERSION}"
   else
@@ -812,9 +813,14 @@ else
   if [[ -f "$DIR/agents/lib/gh_project.sh" && -f "$CONFIG_FILE" ]]; then
     # shellcheck disable=SC1091
     source "$DIR/agents/lib/gh_project.sh"; load_config
+    # `$STATUS_DONE`, not the bare literal it was until #4204: this is the
+    # WRITER of the lane, and four readers decided "is this accepted?" from
+    # lists that did not contain it. The name now comes from the same place
+    # the readers get it (load_config -> lib/acceptance_status.py), so the
+    # writer and the vocabulary cannot drift apart again.
     while read -r n; do
-      set_issue_status "$n" "Done" >/dev/null 2>&1 \
-        && log "  status Done: #$n" || log "  WARN: could not set Done on #$n"
+      set_issue_status "$n" "${STATUS_DONE:-Done}" >/dev/null 2>&1 \
+        && log "  status ${STATUS_DONE:-Done}: #$n" || log "  WARN: could not set ${STATUS_DONE:-Done} on #$n"
     done < <(gh issue list -R "$REPO" --milestone "$MS_TITLE" --state closed --limit 200 --json number --jq '.[].number')
   else
     log "  WARN: gh_project.sh lib not found — set statuses to Done manually"
@@ -981,7 +987,7 @@ else
   NEXT_PY_JSON=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}")
   NEXT_PY_SHA=$(jq -r .sha <<<"$NEXT_PY_JSON")
   NEXT_PY_CUR=$(jq -r .content <<<"$NEXT_PY_JSON" | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
-    | awk -F'"' '/^version =/{print $2; exit}')
+    | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
   if [[ "$NEXT_PY_CUR" == "$NEXT_VERSION" ]]; then
     log "  ok: ${NEXT_BRANCH} pyproject version already ${NEXT_VERSION}"
   else
@@ -995,7 +1001,7 @@ print(base64.b64encode(t.encode()).decode())")
       -f message="chore: bump version to ${NEXT_VERSION} post-${VERSION}-release (ceremony)" --silent
     NEW_CUR=$(gh api "repos/${REPO}/contents/pyproject.toml?ref=${NEXT_BRANCH}" --jq .content \
       | python3 -c 'import sys,base64; print(base64.b64decode(sys.stdin.read()).decode())' \
-      | awk -F'"' '/^version =/{print $2; exit}')
+      | awk -F'"' '!v && /^version =/{v=$2} END{print v}')
     [[ "$NEW_CUR" == "$NEXT_VERSION" ]] || fail "verify failed: ${NEXT_BRANCH} pyproject version is '$NEW_CUR'"
     log "  verified: ${NEXT_BRANCH} pyproject version bumped ${NEXT_PY_CUR} -> ${NEXT_VERSION}"
   fi
@@ -1032,5 +1038,35 @@ else
 fi
 
 resume_agent_flags
+
+# Phase 3 rewrote the Status of every closed issue in the released milestone
+# (-> Done) and Phase 4 repointed the line. Both are board changes the two
+# acceptance sweeps wait on, and neither raises an event -- so the ceremony
+# dispatches them itself rather than leaving a cron to notice (#4201).
+#
+# AFTER `resume_agent_flags`, deliberately, and after the repoint:
+#
+#   * both sweep workflows gate on `vars.AGENTS_ENABLED == 'true'`, which
+#     Phase 0 set to false. A dispatch sent any earlier in the ceremony is
+#     accepted by GitHub and then skipped by the job -- a run that looks
+#     like evidence and did nothing. A run that stops part-way leaves the
+#     flags paused on purpose, so it reaches neither this line nor the
+#     dispatch, which is the correct outcome: nothing should sweep a line
+#     mid-release.
+#   * the ref is the NEXT line's branch, because that is the branch the
+#     sweeps now check out (`vars.RELEASE_BRANCH`, repointed above).
+#
+# `load_config` is re-run here rather than assumed: Phase 3's source of the
+# lib is inside a conditional, and `--phase4-only` skips Phase 3 entirely.
+if [[ $DRY -eq 1 ]]; then
+  log "DRY-RUN: would dispatch the acceptance sweeps on ${NEXT_BRANCH}"
+elif [[ -f "$DIR/agents/lib/gh_project.sh" && -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1091
+  source "$DIR/agents/lib/gh_project.sh"; load_config
+  dispatch_acceptance_sweeps "release ceremony for ${VERSION} completed" "$NEXT_BRANCH"
+else
+  log "  NOTE: no gh_project.sh/config on this host — dispatch the acceptance sweeps by hand: gh workflow run promote_accepted_features.yml --ref ${NEXT_BRANCH}"
+fi
+
 log "NEXT_LINE ${NEXT_BRANCH} #${NEXT_RELEASE_ISSUE}"
 log "Ceremony complete for ${VERSION}."

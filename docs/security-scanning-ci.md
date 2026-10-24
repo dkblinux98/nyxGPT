@@ -95,7 +95,8 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # The one declared version (#4194); a literal '20' until #4216.
+          node-version-file: '.nvmrc'
 
       - name: Install web dependencies
         run: cd web && npm ci

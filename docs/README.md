@@ -21,6 +21,12 @@ packaged with the install. They stay in this directory; start from
 [AGENTS.md](../AGENTS.md) for the agent system. The packaged selection is
 named in `nyxgpt.support.DOC_SECTIONS` (#3809).
 
+**This index is complete, and a test says so.** It is maintained by hand, so
+`tests/unit/test_index_completeness.py` reconciles it against the directory
+and fails the build on any `docs/*.md` this page does not name (#4229). A new
+document that is deliberately not listed goes in that guard's `omitted` set
+with the reason — it cannot simply be left out.
+
 ## Feature overview
 
 What nyxGPT does, with the doc that covers each area. Nothing here is a
@@ -136,8 +142,8 @@ are about building nyxGPT and running this repository. The files live in this
 same `docs/` directory in the repository:
 
 - Contributing and local development — [CONTRIBUTING.md](../CONTRIBUTING.md),
-  `development.md`, `testing.md`, `adding-api-endpoints.md`,
-  `file-lock-audit.md`
+  `development.md`, `testing.md`, `unit-suite-expected-failures.md`,
+  `adding-api-endpoints.md`, `file-lock-audit.md`
 - The agent system — [AGENTS.md](../AGENTS.md), `how-this-project-is-run.md`,
   `agent-smoke.md`, `agent-comment-tokens.md`, `acceptance-drain-gate.md`,
   `reviewable-head-gate.md`, `escalation-evidence.md`, `sprint-autopilot.md`,

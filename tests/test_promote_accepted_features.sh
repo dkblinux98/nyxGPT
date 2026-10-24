@@ -369,6 +369,139 @@ _assert_contains "an issue in an unrelated lane is not a promotion candidate" \
   "$out" "#3733 status 'In Progress' is neither 'Acceptance Testing' nor 'Acceptance Failed'"
 _assert_not_contains "and it is not promoted" "$out" "would promote #3733"
 
+# --- Scenario 8: a cascade resolves inside ONE run (#4201) -----------
+# The `*/30` cron used to double as the cascade iterator: promoting #700
+# completed #600's gate, and #600 moved on the NEXT tick. With the cron gone
+# (ledger D-070) a chain has to converge within one run, so the sweep
+# iterates to a fixed point.
+#
+# The fixture deliberately puts the DEPENDENT issue first in the processing
+# order -- `jq keys[]` sorts them as strings, so #600 is evaluated before
+# the #700 it waits on. A single-pass sweep leaves #600 behind here, which
+# is exactly the defect the loop removes; evaluating them the other way
+# round would pass either way and prove nothing.
+#
+#   #400 (Acceptance Failure, For Release) blocks #700
+#   #700 (Acceptance Failure, Acceptance Testing) blocks #600
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 400, "id": 400, "labels": ["Acceptance Failure"], "body": ""},
+ {"number": 700, "id": 700, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"400": [700], "700": [600]},
+ "blocked_by": {"700": [400], "600": [700, 400]}}
+EOF
+cat > "$TMP/status.json" <<'EOF'
+{"400": "For Release", "700": "Acceptance Testing", "600": "Acceptance Testing"}
+EOF
+echo '{}' > "$TMP/states.json"
+out="$(_run_sweep)"
+_assert_contains "the first hop of the cascade is promoted" "$out" "would promote #700"
+_assert_contains "the second hop is promoted in the same run, not the next tick" \
+  "$out" "would promote #600"
+_assert_contains "the extra pass is reported" "$out" "re-checking for a cascade"
+_assert_contains "both hops are counted once" "$out" "Promoted 2 issue(s)."
+
+# A chain that cannot move must not spin: with #400 unaccepted nothing is
+# promotable, the first pass promotes nothing, and the loop stops there.
+cat > "$TMP/status.json" <<'EOF'
+{"400": "In Progress", "700": "Acceptance Testing", "600": "Acceptance Testing"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "an unmovable chain is a clean no-op" "$out" "Promoted 0 issue(s)."
+_assert_not_contains "and it does not re-check" "$out" "re-checking for a cascade"
+
+# --- Scenario 9: a RELEASED blocker (`Done`) is accepted (#4204) ------
+# `Done` is a lane the loop writes itself: release_ceremony.sh Phase 3 sets
+# every closed issue in the released milestone to it. Until #4204 this gate
+# was `astatus != "$STATUS_FOR_RELEASE"`, so a blocker that was accepted and
+# then RELEASED read as "not accepted yet" -- and because nothing ever moves
+# an issue back out of `Done`, whatever it blocked was unpromotable
+# PERMANENTLY, not merely until the next dispatch.
+#
+# The reachable shape, and the one below: a reopened original (D-042) parked
+# in `Acceptance Failed` whose blocker was released under another milestone.
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 3740, "id": 3740, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"3740": [3733]}, "blocked_by": {"3733": [3740]}}
+EOF
+cat > "$TMP/status.json" <<'EOF'
+{"3733": "Acceptance Failed", "3740": "Done"}
+EOF
+cat > "$TMP/states.json" <<'EOF'
+{"3733": "open"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "a blocker released by the ceremony ('Done') counts as accepted" \
+  "$out" "would promote #3733 from 'Acceptance Failed' to 'For Release'"
+_assert_not_contains "a released blocker no longer strands what it blocks" \
+  "$out" "blocker #3740 is 'Done'"
+
+# ... and the same for a feature parked in `Acceptance Testing`, the other
+# parking lane: the vocabulary is one source, so both lanes get the fix.
+cat > "$TMP/status.json" <<'EOF'
+{"3733": "Acceptance Testing", "3740": "Done"}
+EOF
+echo '{}' > "$TMP/states.json"
+out="$(_run_sweep)"
+_assert_contains "a released blocker promotes from Acceptance Testing too" \
+  "$out" "would promote #3733 from 'Acceptance Testing' to 'For Release'"
+
+# A mixed closure: one blocker released, one still in flight. The released
+# one must not be the thing holding it back -- the OTHER one is.
+cat > "$TMP/issues.json" <<'EOF'
+[{"number": 3740, "id": 3740, "labels": ["Acceptance Failure"], "body": ""},
+ {"number": 3745, "id": 3745, "labels": ["Acceptance Failure"], "body": ""}]
+EOF
+cat > "$TMP/deps.json" <<'EOF'
+{"blocking": {"3740": [3733], "3745": [3733]},
+ "blocked_by": {"3733": [3740, 3745]}}
+EOF
+cat > "$TMP/status.json" <<'EOF'
+{"3733": "Acceptance Testing", "3740": "Done", "3745": "In Progress"}
+EOF
+out="$(_run_sweep)"
+_assert_contains "an in-flight blocker still holds the issue back" \
+  "$out" "blocker #3745 is 'In Progress'"
+_assert_not_contains "and the released blocker is not what holds it" \
+  "$out" "blocker #3740 is 'Done'"
+_assert_not_contains "a partly-accepted closure is not promoted" \
+  "$out" "would promote #3733"
+
+# The wait message names the whole accepted vocabulary, not one lane: a
+# reader of the log should not have to guess that `Done` would do.
+_assert_contains "the wait message names every accepted status" \
+  "$out" "(needs one of: For Release, Done)"
+
+# --- Scenario 9b: the RETIRED gate expression, to show the bug was real
+# Same question, the pre-#4204 form, on the status the release ceremony
+# actually writes. It answers "not accepted" -- and because nothing moves an
+# issue back out of `Done`, it would answer that on every future run too.
+# (The suites in this file's smoke job each carry a retired-form case for
+# this reason, #3775: a check that cannot be shown to fail proves nothing.)
+cat > "$TMP/retired.sh" <<'RETIRED'
+set -euo pipefail
+STATUS_FOR_RELEASE="For Release"
+astatus="Done"   # what release_ceremony.sh Phase 3 set it to
+if [[ "$astatus" != "$STATUS_FOR_RELEASE" ]]; then
+  echo "retired gate: blocker '$astatus' -> NOT accepted"
+else
+  echo "retired gate: blocker '$astatus' -> accepted"
+fi
+RETIRED
+_assert_contains "the retired gate reads a RELEASED blocker as unaccepted" \
+  "$(bash "$TMP/retired.sh" 2>&1)" "-> NOT accepted"
+
+# ... and the one source answers the same question correctly.
+if python3 "$ROOT_DIR/scripts/agents/lib/acceptance_status.py" is-accepted "Done"; then
+  echo "[ok] acceptance_status.py reads a RELEASED blocker as accepted"
+else
+  echo "[FAIL] acceptance_status.py should read 'Done' as accepted" >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
 # --- Scenario 7: nothing to do --------------------------------------
 echo '[]' > "$TMP/issues.json"
 out="$(_run_sweep)"

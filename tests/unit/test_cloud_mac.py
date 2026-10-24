@@ -344,6 +344,20 @@ def _record_host(**overrides):
     return cloud_mac.record_mac_host(values)
 
 
+def _release_stack(host_id, *, region="us-east-1"):
+    """Write the files a release stack for `host_id` leaves on this machine.
+
+    State plus tfvars under the per-host names `cloud_mac.release_paths`
+    resolves, because that pair IS what "this host is scheduled to be released"
+    means locally -- the record's flag is only a claim about it.
+    """
+    state_file, tfvars = cloud_mac.release_paths(host_id)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text("{}\n", encoding="utf-8")
+    tfvars.write_text(f'aws_region = "{region}"\nhost_id = "{host_id}"\n', encoding="utf-8")
+    return state_file, tfvars
+
+
 def _presence(monkeypatch, present, reason=""):
     """Patch the one AWS-answer seam the reconcile reads (#4181).
 
@@ -790,6 +804,11 @@ def test_reconcile_re_applies_the_recorded_ami_and_volume_not_freshly_resolved_o
     `--root-volume-size`, forcing replacement the same way an AMI change does.
     """
     _record_host(mac_ami_id="ami-booted", mac_root_volume_size=400)
+    # Terraform already holds the host, so the reconcile has nothing to import
+    # (#4200). Without this the reconcile would stop rather than let the apply
+    # allocate a second host -- which is what the test below the next one
+    # proves it does.
+    _mac_state("h-0abc")
     applied: dict[str, object] = {}
 
     def _capture(plan):
@@ -823,6 +842,7 @@ def test_a_record_written_before_the_ami_was_pinned_falls_back_to_the_defaults(m
     reconcile -- with the module's `ignore_changes` as the thing that keeps it
     from being replaced -- rather than crash or plan a 0 GiB root volume."""
     _record_host()
+    _mac_state("h-0abc")
     applied: dict[str, object] = {}
 
     def _capture(plan):
@@ -1360,6 +1380,8 @@ def test_a_reconcile_that_somehow_allocated_a_new_host_records_it_loudly(monkeyp
     to happen: if it ever does, a non-refundable minimum has started with no
     disclosure, and the record saying so is how the operator finds out."""
     _record_host()
+    _mac_state("h-0abc")
+    cloud_mac.remember_host(cloud_mac._ledger_from_block(cloud_mac.load_mac_record()))
     monkeypatch.setattr(
         cloud_mac,
         "apply_mac_host",
@@ -1377,8 +1399,24 @@ def test_a_reconcile_that_somehow_allocated_a_new_host_records_it_loudly(monkeyp
     # recomputed rather than carried across -- and the record stays coherent.
     assert record["mac_allocated_at"] != "2026-08-22T18:00:00+00:00"
     assert cloud_mac.record_findings(record) == []
-    # And the superseded block is retrievable, under its own name.
-    assert cloud_mac.cloud_record.load_archive()[0]["block"]["mac_host_id"] == "h-0abc"
+    # And the superseded block is retrievable, under its own name. Found by
+    # substrate rather than by position: since #4200 the ledger is a block of
+    # its own, so "the newest archive entry" is no longer necessarily this one.
+    superseded = [
+        entry
+        for entry in cloud_mac.cloud_record.load_archive()
+        if entry.get("substrate") == cloud_mac.cloud_record.SUBSTRATE_MAC
+    ]
+    assert superseded[0]["block"]["mac_host_id"] == "h-0abc"
+    # #4200. The block is the new host's, and the OLD host is still on the
+    # ledger -- allocated, billing, and named by something. Before the ledger
+    # this was the moment it left the record entirely: the warning above was
+    # printed once, to a terminal, and after that nothing on the machine knew
+    # the host existed.
+    assert [entry["host_id"] for entry in cloud_mac.load_host_ledger()] == [
+        "h-0abc",
+        "h-0c8f9957132fb0794",
+    ]
 
 
 # --- Free internal-consistency checks ------------------------------------
@@ -1418,24 +1456,28 @@ def test_a_scheduled_release_with_no_schedule_is_reported():
     release was scheduled. The local half of that is free to check."""
     findings = cloud_mac.record_findings({"mac_host_id": "h-0abc", "mac_release_scheduled": True})
 
-    assert any("no release schedule exists" in finding for finding in findings)
+    assert any("no release schedule for this host exists" in finding for finding in findings)
 
 
 def test_a_schedule_for_a_different_host_is_reported():
-    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text(
-        'host_id = "h-06c438d25077be888"\n', encoding="utf-8"
-    )
+    """#4200. The question is about THIS host's own stack. A stack that names
+    another host is not this host's schedule, and the wording says so of the
+    host being reported on rather than of whichever host happened to own the
+    one global slot."""
+    _release_stack("h-06c438d25077be888")
 
     findings = cloud_mac.record_findings(
         {"mac_host_id": "h-0c8f9957132fb0794", "mac_release_scheduled": True}
     )
 
-    assert any("rather than h-0c8f9957132fb0794" in finding for finding in findings)
+    assert any("no release schedule for this host exists" in finding for finding in findings)
+    # ...and the other host's stack is untouched and still its own.
+    assert cloud_mac.release_stack_exists("h-06c438d25077be888")
 
 
 def test_a_coherent_record_reports_nothing():
     allocated = datetime(2026, 10, 3, 19, 27, 5, tzinfo=UTC)
-    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text('host_id = "h-0abc"\n', encoding="utf-8")
+    _release_stack("h-0abc")
 
     assert (
         cloud_mac.record_findings(
@@ -1963,3 +2005,535 @@ def test_the_refusal_names_the_reason_aws_could_not_be_asked(monkeypatch):
         cloud_mac.allocate(_args())
 
     assert "boto3 is required" in cloud_mac.load_mac_record()["mac_verify_error"]
+
+
+# --- #4200: one host, one release schedule ------------------------------
+#
+# The defect: `apply_release_schedule` always wrote the SAME tfvars and the SAME
+# state file, and every resource carried the same fixed `name_prefix`. So
+# scheduling host B's release did not create a second schedule -- Terraform
+# updated the one schedule in place to point at B, and host A was left still
+# allocated, still inside AWS's 24-hour minimum, still billing about $15.60 a
+# day, with nothing scheduled to release it. Nothing reported it either: the
+# record had one Mac slot, so B's allocation had already overwritten A's fields.
+#
+# These tests are about the general rule, not that sequence: a record or a
+# schedule for a billing resource is keyed by the resource, and anything still
+# billing stays visible until it is released.
+
+
+def _recording_terraform(monkeypatch, *, fail_on=()):
+    """Replace the Terraform runner with a recorder; return the call list.
+
+    `fail_on` is a tuple of subcommands to raise `CloudCommandError` for, which
+    is how the "an import that cannot be done must stop the deploy" case is
+    driven without a Terraform binary.
+
+    An `apply` creates the state file its `init` named, because that is the one
+    behaviour of the real binary these tests depend on: `release_stack_exists`
+    asks whether Terraform state for a host is present, deliberately rather
+    than whether a tfvars is -- a tfvars left by an apply that FAILED would
+    otherwise report a schedule that does not exist, which is the dangerous
+    direction to be wrong in.
+    """
+    calls: list[dict[str, object]] = []
+    backend: dict[str, Path] = {}
+
+    def _run(arguments, **kwargs):
+        calls.append({"argv": list(arguments), "chdir": str(kwargs.get("chdir") or "")})
+        if set(arguments) & set(fail_on):
+            raise CloudCommandError("terraform said no")
+        for argument in arguments:
+            if argument.startswith("-backend-config=path="):
+                backend["path"] = Path(argument.split("=", 2)[2])
+        if "apply" in arguments and "path" in backend:
+            backend["path"].write_text("{}\n", encoding="utf-8")
+        return SimpleNamespace(stdout="{}", returncode=0)
+
+    monkeypatch.setattr(cloud_infra, "sync_terraform_config", lambda: None)
+    monkeypatch.setattr(cloud_infra, "run_terraform", _run)
+    monkeypatch.setattr(cloud_mac, "_outputs", lambda _dir: {})
+    return calls
+
+
+def _schedule(host_id, monkeypatch, *, release_at=None, calls=None):
+    """Apply a release schedule for `host_id` with a recording Terraform."""
+    calls = _recording_terraform(monkeypatch) if calls is None else calls
+    return cloud_mac.apply_release_schedule(
+        host_id=host_id,
+        release_at=release_at or datetime(2026, 10, 22, 18, 30, tzinfo=UTC),
+        region="us-east-1",
+        profile="nyxgpt",
+        slack_channel="C0SMOKE",
+        slack_bot_token="xoxb-smoke",
+        name_prefix="nyxgpt-tf-mac",
+    )
+
+
+def test_scheduling_a_second_host_leaves_the_first_hosts_schedule_intact(monkeypatch):
+    """The acceptance criterion, stated as the test that failed before #4200.
+
+    Two hosts, the second scheduled while the first is still allocated, and
+    BOTH release schedules exist afterwards. Before the per-host split the
+    second apply reused the first host's state file and resource names, so
+    Terraform retargeted the one schedule and the first host's release
+    disappeared with no error and no notification.
+    """
+    calls = _recording_terraform(monkeypatch)
+
+    first = _schedule("h-0aaa1111aaaa1111a", monkeypatch, calls=calls)
+    second = _schedule("h-0bbb2222bbbb2222b", monkeypatch, calls=calls)
+
+    assert cloud_mac.release_stack_exists("h-0aaa1111aaaa1111a")
+    assert cloud_mac.release_stack_exists("h-0bbb2222bbbb2222b")
+    assert cloud_mac.release_stack_hosts() == [
+        "h-0aaa1111aaaa1111a",
+        "h-0bbb2222bbbb2222b",
+    ]
+    # Separate Terraform state, which is what makes them separate stacks rather
+    # than two names for one.
+    assert first["state_file"] != second["state_file"]
+    # And separate AWS resource names, which is what stops the second apply
+    # adopting the first's schedule even if the state were shared.
+    prefixes = {
+        cloud_mac._read_tfvars(cloud_mac.release_paths(host)[1])["name_prefix"]
+        for host in ("h-0aaa1111aaaa1111a", "h-0bbb2222bbbb2222b")
+    }
+    assert len(prefixes) == 2
+    assert all("nyxgpt-tf-mac-" in prefix for prefix in prefixes)
+    # Each apply was initialized against its own backend path, with
+    # `-reconfigure` -- without which Terraform stops to ask whether to migrate
+    # the previous host's state into the new file, and `-input=false` turns that
+    # question into a failed run.
+    inits = [call for call in calls if "init" in call["argv"]]
+    paths = {
+        argument for call in inits for argument in call["argv"] if argument.startswith("-backend")
+    }
+    assert len(paths) == 2
+    assert all("-reconfigure" in call["argv"] for call in inits)
+
+
+def test_each_hosts_tfvars_names_only_that_host(monkeypatch):
+    """The tfvars is what `terraform destroy` is later pointed at, so a file
+    that names the wrong host destroys the wrong stack."""
+    calls = _recording_terraform(monkeypatch)
+    _schedule("h-0aaa1111aaaa1111a", monkeypatch, calls=calls)
+    _schedule("h-0bbb2222bbbb2222b", monkeypatch, calls=calls)
+
+    for host in ("h-0aaa1111aaaa1111a", "h-0bbb2222bbbb2222b"):
+        assert cloud_mac._read_tfvars(cloud_mac.release_paths(host)[1])["host_id"] == host
+
+
+def test_cleaning_up_one_host_does_not_touch_anothers_pending_schedule(monkeypatch):
+    """Cleanup is per host. The previous code destroyed "the release stack", of
+    which there was one -- so tidying up after a finished host and removing a
+    pending host's only means of release were the same operation."""
+    calls = _recording_terraform(monkeypatch)
+    _schedule("h-0aaa1111aaaa1111a", monkeypatch, calls=calls)
+    _schedule("h-0bbb2222bbbb2222b", monkeypatch, calls=calls)
+
+    assert (
+        cloud_mac.destroy_release_stack(
+            host_id="h-0aaa1111aaaa1111a", region="us-east-1", profile="nyxgpt"
+        )
+        is True
+    )
+
+    assert not cloud_mac.release_stack_exists("h-0aaa1111aaaa1111a")
+    assert cloud_mac.release_stack_exists("h-0bbb2222bbbb2222b")
+    assert cloud_mac.release_stack_hosts() == ["h-0bbb2222bbbb2222b"]
+
+
+def test_a_stack_created_before_the_split_is_adopted_rather_than_orphaned(monkeypatch):
+    """The legacy single-slot pair describes resources that exist in AWS. Giving
+    that host a new filename would leave the old stack with nothing pointing at
+    it -- an orphaned schedule is the same defect wearing the fix's clothes."""
+    cloud_mac.MAC_RELEASE_TFSTATE_FILE.write_text("{}\n", encoding="utf-8")
+    cloud_mac.MAC_RELEASE_TFVARS_FILE.write_text(
+        'aws_region = "us-east-1"\n'
+        'name_prefix = "nyxgpt-tf-mac"\n'
+        'host_id = "h-0legacy11legacy11"\n',
+        encoding="utf-8",
+    )
+
+    assert cloud_mac.release_paths("h-0legacy11legacy11") == (
+        cloud_mac.MAC_RELEASE_TFSTATE_FILE,
+        cloud_mac.MAC_RELEASE_TFVARS_FILE,
+    )
+    assert cloud_mac.release_stack_exists("h-0legacy11legacy11")
+    # A different host gets its own pair, so the legacy stack is never reused
+    # for anything else.
+    assert cloud_mac.release_paths("h-0bbb2222bbbb2222b")[0] != cloud_mac.MAC_RELEASE_TFSTATE_FILE
+    # And re-applying the legacy host keeps the resource names it already has:
+    # renaming an EventBridge schedule is a destroy-then-create, and this one
+    # may be the only thing that will ever release the host.
+    _recording_terraform(monkeypatch)
+    _schedule("h-0legacy11legacy11", monkeypatch)
+    assert (
+        cloud_mac._read_tfvars(cloud_mac.MAC_RELEASE_TFVARS_FILE)["name_prefix"] == "nyxgpt-tf-mac"
+    )
+
+
+# --- #4200: every billing host is visible -------------------------------
+
+
+def test_every_tracked_host_is_reported_not_only_the_deployments(monkeypatch):
+    """A host that lost the record's single slot to a later allocation was
+    reported by nothing: not `cloud status`, not the dashboard, not the API."""
+    _presence(monkeypatch, True)
+    cloud_mac.remember_host(
+        {
+            "host_id": "h-0older1111older11",
+            "instance_type": "mac2.metal",
+            "region": "us-east-1",
+            "allocated_at": "2026-08-20T18:00:00+00:00",
+            "release_at": "2026-08-21T18:30:00+00:00",
+        }
+    )
+    _confirmed_host()
+
+    reported = cloud_mac.pending_releases(_args())
+
+    assert [host["host_id"] for host in reported] == ["h-0older1111older11", "h-0abc"]
+
+
+def test_a_host_with_no_schedule_is_reported_as_still_billing(monkeypatch):
+    """ "Nothing that was recorded drops out of view without explanation" --
+    and the explanation for a host with no schedule is that nothing will
+    release it."""
+    _presence(monkeypatch, True)
+    _confirmed_host()
+
+    pending = cloud_mac.pending_release(_args())
+
+    assert pending["release_schedule_present"] is False
+    assert "still billing" in pending["unscheduled_warning"]
+    assert pending["host_id"] in pending["unscheduled_warning"]
+
+
+def test_a_scheduled_host_carries_no_unscheduled_warning(monkeypatch):
+    _presence(monkeypatch, True)
+    _confirmed_host()
+    _release_stack("h-0abc")
+
+    pending = cloud_mac.pending_release(_args())
+
+    assert pending["release_schedule_present"] is True
+    assert pending["unscheduled_warning"] == ""
+
+
+def test_a_host_only_a_leftover_release_stack_names_is_still_reported(monkeypatch):
+    """The last line of defence. If both records are gone and only Terraform's
+    files name the host, it is still billing and it is still reported."""
+    _presence(monkeypatch, True)
+    _release_stack("h-0orphan11orphan11")
+
+    reported = cloud_mac.pending_releases(_args())
+
+    assert [host["host_id"] for host in reported] == ["h-0orphan11orphan11"]
+    assert reported[0]["release_schedule_present"] is True
+
+
+def test_the_ledger_survives_the_mac_block_being_replaced_whole():
+    """`record_mac_host` replaces every key the Mac substrate owns (#4136). The
+    ledger is a different block precisely so that rule cannot drop a host that
+    is still billing."""
+    cloud_mac.remember_host({"host_id": "h-0older1111older11", "region": "us-east-1"})
+
+    _record_host(mac_host_id="h-0newer2222newer22")
+
+    assert [entry["host_id"] for entry in cloud_mac.load_host_ledger()] == ["h-0older1111older11"]
+    assert cloud_mac.load_mac_record()["mac_host_id"] == "h-0newer2222newer22"
+
+
+def test_a_host_is_only_forgotten_once_aws_says_it_is_gone(monkeypatch):
+    """Two tracked hosts, one released and one not. Exactly one is cleared, and
+    only the cleared one's stack is torn down."""
+    calls = _recording_terraform(monkeypatch)
+    _schedule("h-0gone1111gone1111", monkeypatch, calls=calls)
+    _schedule("h-0held2222held2222", monkeypatch, calls=calls)
+    for host in ("h-0gone1111gone1111", "h-0held2222held2222"):
+        cloud_mac.remember_host({"host_id": host, "region": "us-east-1"})
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda host_id, *_a, **_k: cloud_mac.HostPresence(present=host_id != "h-0gone1111gone1111"),
+    )
+
+    cleared = cloud_mac.reconcile_released_hosts(_args())
+
+    assert cleared == ["h-0gone1111gone1111"]
+    assert [entry["host_id"] for entry in cloud_mac.load_host_ledger()] == ["h-0held2222held2222"]
+    assert not cloud_mac.release_stack_exists("h-0gone1111gone1111")
+    assert cloud_mac.release_stack_exists("h-0held2222held2222")
+
+
+def test_what_aws_said_about_a_host_only_a_stack_names_is_written_down(monkeypatch):
+    """#4200 review, Minor 4: the answer needs somewhere to land.
+
+    A host can be tracked by a leftover release stack alone -- a pre-#4200
+    record, or a run that died between the allocation and the ledger write --
+    and `tracked_hosts()` therefore asks AWS about it. But
+    `_remember_verification` early-returned when the host had no ledger entry,
+    so the answer was discarded, and every surface went on saying "nothing has
+    asked AWS about this host" immediately after a run had asked -- over a host
+    that is billing. Which is #4200's own class: a fact about a billing
+    resource with no per-resource place to live is a fact that gets dropped.
+    """
+    _release_stack("h-0orphan11orphan11")
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=True),
+    )
+    assert cloud_mac.ledger_entry("h-0orphan11orphan11") == {}
+
+    assert cloud_mac.reconcile_released_hosts(_args(), cleanup=False) == []
+
+    entry = cloud_mac.ledger_entry("h-0orphan11orphan11")
+    assert entry["host_id"] == "h-0orphan11orphan11"
+    assert entry["host_present"] is True
+    assert entry["verified_at"]
+
+
+def test_a_released_host_no_ledger_names_is_not_written_down_to_be_deleted(monkeypatch):
+    """The other side of that guard, and the reason it is not simply removed.
+
+    `reconcile_released_hosts` forgets a released host on the statement after
+    the one that records what AWS said, so creating the entry for a host AWS
+    reports as GONE would write the ledger twice to end where it started -- and
+    would briefly publish an entry asserting a host that no longer exists.
+    """
+    _release_stack("h-0orphan11orphan11")
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=False),
+    )
+
+    assert cloud_mac.reconcile_released_hosts(_args()) == ["h-0orphan11orphan11"]
+
+    assert cloud_mac.load_host_ledger() == []
+
+
+def test_a_host_aws_could_not_be_asked_about_stays_on_the_books(monkeypatch):
+    """A record deleted on the strength of expired credentials hides a resource
+    that is still costing money."""
+    cloud_mac.remember_host({"host_id": "h-0unknown1unknown", "region": "us-east-1"})
+    monkeypatch.setattr(
+        cloud_mac,
+        "host_presence",
+        lambda *_a, **_k: cloud_mac.HostPresence(present=None, reason="AuthFailure"),
+    )
+
+    assert cloud_mac.reconcile_released_hosts(_args()) == []
+    assert [entry["host_id"] for entry in cloud_mac.load_host_ledger()] == ["h-0unknown1unknown"]
+
+
+# --- #4200: no second host by accident ----------------------------------
+
+
+def test_a_reconcile_imports_a_still_held_host_rather_than_allocating_another(monkeypatch):
+    """`cloud destroy` drops `aws_ec2_host.this` from state on purpose, so the
+    teardown cannot try to release the host inside the 24-hour window. A
+    re-apply against that state does not reconcile the host -- it ALLOCATES A
+    SECOND ONE. Importing it first is what makes deploy/destroy/deploy reuse
+    the Mac the operator is already paying for."""
+    _record_host()
+    calls = _recording_terraform(monkeypatch)
+    _settings(monkeypatch)
+    monkeypatch.setattr(
+        cloud_mac,
+        "apply_mac_host",
+        lambda plan: {"host_id": "h-0abc", "instance_id": "i-0new"},
+    )
+
+    cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+    imports = [call for call in calls if "import" in call["argv"]]
+    assert len(imports) == 1
+    assert imports[0]["argv"][-2:] == ["aws_ec2_host.this", "h-0abc"]
+
+
+def test_a_reconcile_whose_import_fails_refuses_rather_than_buying_a_second_host(monkeypatch):
+    """The cheap, reversible outcome is a deploy that does not run. Falling
+    through to the apply spends the operator's money on a host they did not
+    ask for and starts a second non-refundable 24-hour minimum."""
+    _record_host()
+    _recording_terraform(monkeypatch, fail_on=("import",))
+    _settings(monkeypatch)
+    monkeypatch.setattr(
+        cloud_mac, "apply_mac_host", lambda plan: pytest.fail("nothing may be applied")
+    )
+
+    with pytest.raises(CloudCommandError, match="SECOND host"):
+        cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+
+def test_a_host_terraform_already_holds_is_not_re_imported(monkeypatch):
+    """The common case -- a re-deploy with no teardown in between. An import of
+    a resource state already holds fails, so doing it unconditionally would
+    break the path that works."""
+    _record_host()
+    _mac_state("h-0abc")
+    calls = _recording_terraform(monkeypatch)
+    _settings(monkeypatch)
+    monkeypatch.setattr(
+        cloud_mac,
+        "apply_mac_host",
+        lambda plan: {"host_id": "h-0abc", "instance_id": "i-0new"},
+    )
+
+    cloud_mac._reconcile_existing(_args(), cloud_mac.load_mac_record())
+
+    assert not [call for call in calls if "import" in call["argv"]]
+
+
+def test_the_disclosure_names_the_host_that_is_already_billing(monkeypatch):
+    """ "Allocating another host takes the existing priced disclosure plus
+    confirmation, and names the host already billing." Two non-refundable
+    charges running at once is a different decision from one."""
+    plan = cloud_mac.MacAllocationPlan(
+        instance_type="mac2.metal",
+        region="us-east-1",
+        availability_zone="us-east-1c",
+        pricing=cloud_mac.MacHostPricing(
+            instance_type="mac2.metal",
+            host_family="mac2",
+            region="us-east-1",
+            hourly_rate=0.65,
+        ),
+    )
+
+    disclosure = cloud_mac.format_allocation_disclosure(
+        plan,
+        datetime(2026, 10, 22, 18, 30, tzinfo=UTC),
+        already_billing=[
+            {
+                "host_id": "h-0older1111older11",
+                "instance_type": "mac2.metal",
+                "region": "us-east-1",
+                "hourly_rate": 0.65,
+                "release_schedule_present": False,
+            }
+        ],
+    )
+
+    assert "h-0older1111older11" in disclosure
+    assert "IN ADDITION" in disclosure
+    assert "NOT scheduled to be released" in disclosure
+    # The ordinary disclosure is unchanged when nothing else is outstanding --
+    # a permanent warning would train the operator to scroll past it.
+    assert "IN ADDITION" not in cloud_mac.format_allocation_disclosure(
+        plan, datetime(2026, 10, 22, 18, 30, tzinfo=UTC)
+    )
+
+
+# --- #4200: the teardown clears the backlog -----------------------------
+
+
+def test_a_teardown_schedules_a_release_for_a_host_that_has_none(monkeypatch):
+    """The repair half. A fix that only stops NEW hosts being orphaned would
+    leave the ones already orphaned billing forever."""
+    _presence(monkeypatch, True)
+    calls = _recording_terraform(monkeypatch)
+    monkeypatch.setattr(cloud_mac, "_slack_settings", lambda: ("C0SMOKE", "xoxb-smoke"))
+    monkeypatch.setattr(cloud_mac, "destroy_mac_instance", lambda _v: {"instance_terminated": True})
+    cloud_mac.remember_host(
+        {
+            "host_id": "h-0orphan11orphan11",
+            "region": "us-east-1",
+            "allocated_at": "2026-08-20T18:00:00+00:00",
+            "release_at": "2026-08-21T18:30:00+00:00",
+        }
+    )
+    _record_host()
+
+    result = cloud_mac.teardown(_args())
+
+    assert result["release_scheduled"] is True
+    assert len(result["other_schedules"]) == 1
+    assert cloud_mac.release_stack_exists("h-0abc")
+    assert cloud_mac.release_stack_exists("h-0orphan11orphan11")
+    assert not result["errors"]
+    assert calls  # Terraform really was driven, once per stack
+
+
+def test_a_teardown_with_no_deployment_left_still_schedules_outstanding_hosts(monkeypatch):
+    """ "This deployment is already gone" was never a reason to leave another
+    host billing with nothing to release it."""
+    _presence(monkeypatch, True)
+    _recording_terraform(monkeypatch)
+    monkeypatch.setattr(cloud_mac, "_slack_settings", lambda: ("C0SMOKE", "xoxb-smoke"))
+    cloud_mac.remember_host(
+        {
+            "host_id": "h-0orphan11orphan11",
+            "region": "us-east-1",
+            "allocated_at": "2026-08-20T18:00:00+00:00",
+            "release_at": "2026-08-21T18:30:00+00:00",
+        }
+    )
+
+    result = cloud_mac.teardown(_args())
+
+    assert result["managed"] is False
+    assert len(result["other_schedules"]) == 1
+    assert cloud_mac.release_stack_exists("h-0orphan11orphan11")
+
+
+def test_a_teardown_never_destroys_the_stack_of_a_host_that_is_still_allocated(monkeypatch):
+    """Tearing down a pending stack removes the one thing that was going to
+    release that host."""
+    calls = _recording_terraform(monkeypatch)
+    _schedule("h-0held2222held2222", monkeypatch, calls=calls)
+    monkeypatch.setattr(cloud_mac, "host_still_allocated", lambda *_a, **_k: True)
+
+    assert cloud_mac._cleanup_finished_release_stacks("us-east-1", "nyxgpt", keep="") == []
+    assert cloud_mac.release_stack_exists("h-0held2222held2222")
+
+
+def test_the_host_slug_keeps_aws_resource_names_inside_their_length_limits():
+    """EventBridge schedule names and IAM role names cap at 64 characters, and
+    the longest name this composes is `<prefix>-<slug>-release-scheduler`. A
+    name that overflows fails the apply -- which, on this stack, means no
+    release schedule for a host that is already billing."""
+    slug = cloud_mac.host_slug("h-0c8f9957132fb0794")
+
+    assert slug == "0c8f9957132fb0794"
+    assert len(f"nyxgpt-tf-mac-{slug}-release-scheduler") <= 64
+
+
+@pytest.mark.parametrize("host_id", ["h-0abc", "H-0ABC", "../../escape", "h-0c8f9957132fb0794"])
+def test_the_slug_never_escapes_the_cloud_directory(host_id):
+    """The slug becomes a filename, so a malformed id recorded by an older
+    build must not be able to write outside `~/.nyxGPT/cloud`."""
+    state_file, tfvars = cloud_mac.release_paths(host_id)
+
+    assert state_file.parent == cloud_infra.CLOUD_DIR
+    assert tfvars.parent == cloud_infra.CLOUD_DIR
+
+
+def test_the_unscheduled_warning_is_not_stated_over_an_unconfirmed_host(monkeypatch):
+    """#4181's rule applies to #4200's new sentence too.
+
+    "Still billing" is a claim about AWS. Over a record nothing confirmed, the
+    honest statement is `provenance` -- which is why the warning is empty there
+    rather than asserting a charge from a host id and a missing file.
+    """
+    _presence(monkeypatch, None, reason="AWS could not be asked")
+    _record_host()
+
+    pending = cloud_mac.pending_release(_args())
+
+    assert pending["release_schedule_present"] is False
+    assert pending["unscheduled_warning"] == ""
+    assert pending["usable"] is False
+
+
+def test_the_missing_schedule_finding_claims_nothing_about_billing():
+    """Findings are reported over records nothing has confirmed, so the wording
+    stays structural: the flag, and the absence of the stack it refers to."""
+    findings = cloud_mac.record_findings({"mac_host_id": "h-0abc", "mac_release_scheduled": True})
+
+    assert findings
+    assert not any("billing" in finding for finding in findings)

@@ -13,9 +13,10 @@
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage",
+    "test:coverage": "vitest run --coverage",
     "audit:ci": "audit-ci --config audit-ci.jsonc"
   },
   "dependencies": {
@@ -27,13 +28,13 @@
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-trace-base": "^2.10.0",
     "@opentelemetry/sdk-trace-web": "^2.10.0",
-    "@sentry/nextjs": "^10.69.0",
+    "@sentry/nextjs": "^10.76.2",
     "@vercel/otel": "^2.1.3",
-    "next": "^16.3.8",
+    "next": "^16.4.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-virtuoso": "^4.18.1",
-    "undici": "^6.29.0"
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "^16.2.10",
@@ -44,17 +45,17 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.1.2",
-    "@vitest/coverage-v8": "^4.0.16",
-    "@vitest/ui": "^4.0.16",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vitest/ui": "^4.1.12",
     "audit-ci": "7.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
-    "happy-dom": "^20.0.11",
+    "happy-dom": "^21.0.4",
     "msw": "^2.12.7",
     "typescript": "^5",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.12"
   },
   "overrides": {
-    "serialize-javascript": "^7.0.5"
+    "serialize-javascript": "^7.1.3"
   }
 }

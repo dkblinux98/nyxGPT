@@ -85,6 +85,41 @@ though their failure issues had been fixed, and the placements were then
 mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
 (D-001 note, 2026-08-14).
 
+### What "accepted" means
+
+One module answers it: `scripts/agents/lib/acceptance_status.py` (#4204,
+ledger D-066). Two questions, named rather than ordered, because the board's
+lanes are not a total order:
+
+| Question | True for | Who asks |
+|---|---|---|
+| **`is_accepted`** — the owner has accepted this issue | `For Release`, `Done` | `promote_accepted_features.sh` (the blocker gate), the drain gate's sprint scope, `sprint_calc.py`'s park state, the sprint report's `done` count |
+| **`has_reached_acceptance`** — merged and at least in the acceptance queue | `Acceptance Testing`, `For Release`, `Done` | `sweep_parked_blocked_issues()` (the parked-blocked completeness test, "Acceptance Testing or beyond") |
+
+`Done` is accepted because it is the lane **this loop writes itself**: the
+release ceremony's Phase 3 close-out sets every closed issue in the released
+milestone to it. Until #4204 each of those four callers carried its own
+hard-coded list and `Done` was on none of them, so an issue that was accepted
+and then *released* read as "not accepted yet" — permanently, since nothing
+moves an issue back out of `Done`. Anything parked behind such a blocker was
+unpromotable forever.
+
+`Acceptance Failed` is in **neither** list, although it sits "beyond"
+`Acceptance Testing` in board order. Work is still owed on both populations
+that park there — held rework whose fix has not shipped, and an original the
+owner reopened — so reading it as a completed blocker would promote parked
+work onto a blocker the owner rejected. That is why the two predicates are
+named, not derived from a lane ordering.
+
+The shell asks through `status_is_accepted` /
+`status_has_reached_acceptance` in `lib/gh_project.sh`, which read the
+vocabulary once per run. The lane names are config keys with literal
+defaults (`STATUS_FOR_RELEASE`, `STATUS_DONE`, `STATUS_ACCEPTANCE_TESTING`),
+so a rename stays a config change. `tests/unit/test_acceptance_status.py`
+fails the build if any script starts comparing a Status value to decide
+acceptance on its own, or writes `Done` as a bare literal — the single
+source is enforced, not merely documented.
+
 ### The rule
 
 - `@acceptance-failure` (`handle_acceptance_failure.yml`) and `@improvement`
@@ -98,7 +133,8 @@ mistaken for stale board state and swept — recorded in `agents/LEDGER.md`
     release is accepted;
   - any **feature awaiting rework** — a feature the owner has already failed
     parks closed in `Acceptance Testing` (or in `Acceptance Failed`, #3780)
-    until everything blocking it reaches `For Release`
+    until everything blocking it is **accepted** — see
+    [What "accepted" means](#what-accepted-means) —
     (`promote_accepted_features.sh`, owner flow 2026-08-02).
     It is exempt while its own blockers are held, because otherwise the gate
     would deadlock on the work it is holding: the feature waits on its
@@ -156,12 +192,63 @@ Both commands must **open a line** of the comment to file anything (#3790) —
 that as an @improvement on #3731" does not. See
 [Comment tokens](agent-comment-tokens.md).
 
+### The two sweeps are dispatched, not polled (#4201)
+
+`promote_accepted_features.yml` and `sweep_parked_blocked_issues.yml` ran on
+`*/30 * * * *` until 2026-10-21 — 96 runs a day between them, each checking
+out the release branch and walking every parked issue's transitive blocked-by
+closure to report `Promoted 0 issue(s)`. **Both are now dispatch-only**, for
+the reasons that removed the ceremony's cron (ledger **D-060**) and this
+gate's (2026-08-25): GitHub throttles a busy cron to every 3–8 hours, so the
+poll was unreliable as well as expensive, and first principle 1 says do not
+poll what will notify you. Ledger **D-070**.
+
+Every actor that changes the state a sweep waits on dispatches it, through
+one shared helper — `dispatch_acceptance_sweeps` in
+`scripts/agents/lib/gh_project.sh`, which dispatches *both* sweeps on the
+release branch and is best-effort (it always returns 0, so a refused dispatch
+can never fail a merge that already happened):
+
+| Actor | When |
+|---|---|
+| `scripts/agents/review_accept_and_merge.sh` | on merge, after the issue lands in `In Review` (parked), `Acceptance Testing` or `For Release` |
+| `scripts/agents/drain_gate.sh` | after a release that actually moved something — **edge-triggered**, because this workflow subscribes to both sweeps' `workflow_run` completion and an unconditional dispatch would be a cycle |
+| `scripts/release_ceremony.sh` | at the end, after Phase 4 restores the agent flags (both sweeps gate on `AGENTS_ENABLED`, so a dispatch sent during the pause would be accepted and then skipped) |
+
+The acceptance handlers (`@acceptance-failure`, `@improvement`) deliberately
+dispatch nothing: all they write is a new *blocker* plus a park, so they add a
+gate and can never satisfy one.
+
+**The one case no actor can announce is yours.** This is a *user* project, so
+moving an issue on the board raises no `projects_v2_item` event anything can
+subscribe to. If you move the last blocker to `For Release` yourself, one
+dispatch picks it up — the same shape **D-060** uses for the ceremony:
+
+```bash
+gh workflow run promote_accepted_features.yml --ref <release branch> -f dry_run=true
+gh workflow run promote_accepted_features.yml --ref <release branch>
+gh workflow run sweep_parked_blocked_issues.yml --ref <release branch>
+```
+
+Nothing is stranded by the crons' absence. Both sweeps converge **within one
+run** — `sweep_parked_blocked_issues()` always did, and
+`promote_accepted_features.sh` gained the same fixed-point loop in #4201
+because the cron had been doubling as its cascade iterator, resolving one hop
+per tick. A run with nothing promotable moves nothing and posts nothing.
+
+Executed evidence for the trigger itself is
+`.github/workflows/acceptance-sweep-dispatch-smoke.yml`, which performs a
+real `dry_run=true` dispatch through the real helper and cites the resulting
+run URLs (D-006 — `schedule` only ever runs the default branch's copy, so the
+cron this replaced could never be exercised from a branch at all).
+
 ### Moving parts
 
 | Path | Role |
 |---|---|
 | `scripts/agents/lib/drain_gate.py` | pure decisions: lane summary (including the parked/held split), gate state, rework exemption, bypass rule |
-| `scripts/agents/promote_accepted_features.sh` | promotes a parked issue out of either lane once its whole blocked-by closure is accepted |
+| `scripts/agents/promote_accepted_features.sh` | promotes a parked issue out of either lane once its whole blocked-by closure is accepted; iterates to a fixed point so a cascade resolves in one run |
+| `scripts/agents/lib/gh_project.sh` → `dispatch_acceptance_sweeps` | the one place that dispatches either sweep (D-066); `drain_gate_wants_sweeps` is the edge-trigger rule |
 | `scripts/agents/lib/gh_project.sh` | `acceptance_lane_snapshot`, `drain_gate_classify_held`, `drain_gate_state`, `issue_acceptance_role`, `acceptance_reopen_original`, `drain_gate_hold`, `drain_gate_release`, `issue_bypasses_drain_gate` |
 | `scripts/agents/drain_gate.sh` | `state` (read-only) / `release` (open the gate) |
 | `.github/workflows/acceptance_drain_gate.yml` | the watcher |
@@ -174,7 +261,11 @@ combines events with an explicit manual dispatch:
 
 - `workflow_run` after **Promote Accepted Features** and **Sweep Parked
   Blocked Issues** — the two automations that move items out of Acceptance
-  Testing, so a drain is normally detected within seconds;
+  Testing, so a drain is normally detected within seconds of one running.
+  Since #4201 those two are themselves dispatch-only, so this path fires when
+  an actor dispatched them (a merge, a ceremony, a gate release) rather than
+  on every half hour — which is the same set of moments that could have
+  drained the lane in the first place;
 - `issues: [closed]`;
 - `workflow_dispatch` — the owner opens the gate by hand at the end of a round.
 
@@ -322,6 +413,7 @@ or dispatch the workflow with `check_only=true`.
 
 ```bash
 pytest tests/unit/test_drain_gate.py tests/unit/test_ceremony_trigger.py  # pure decisions + the drain-gate shell suite (CI)
+pytest tests/unit/test_board_sweeps_are_dispatch_driven.py  # no sub-daily cron, one dispatch source, every actor wired (#4201)
 bash tests/test_drain_gate_lib.sh          # lane snapshot, parked/held split, gate open/closed, hold, release, start guard
 bash tests/test_promote_accepted_features.sh  # promotion out of both parking lanes (also run by pytest)
 bash tests/test_release_ceremony_watch.sh  # ceremony trigger guardrails, against a fake gh

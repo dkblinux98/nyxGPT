@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from ops_step_isolation import INSTALL_STEP_FUNCS
 
 from nyxgpt import install_mode, ops, self_heal
 
@@ -661,11 +662,18 @@ def _smoke_status_greps():
     """Every install-mode pattern the systemd smoke greps `ops status` for.
 
     Matched on the pattern rather than on the pipeline, because the script
-    reads the output both ways: piped straight into `grep -q`, and captured
-    into `dev_status_out` first so a failure can print it.
+    reads the output both ways: piped straight into `grep`, and captured into
+    `dev_status_out` first so a failure can print it.
+
+    Deliberately not anchored on `grep -q`: a `grep` reading a pipe may not
+    stop early, or the producer's EPIPE becomes the pipeline's answer under
+    `pipefail` (#4192), so the piped reads spell it
+    `grep "..." >/dev/null`. Anchoring on `-q` here silently returned an
+    EMPTY pattern list for those -- and the only thing standing between that
+    and a vacuous pass is the `assert patterns` in the caller.
     """
     script = Path(__file__).resolve().parents[2] / "scripts" / "systemd-native-smoke.sh"
-    return re.findall(r'grep -q "(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
+    return re.findall(r'grep[^"\n]*"(Install mode[^"]+)"', script.read_text(encoding="utf-8"))
 
 
 def _greps(pattern, text):
@@ -767,33 +775,32 @@ def test_infra_status_reports_dev_mode_and_its_checkout(monkeypatch, checkout):
 # --- test-isolation guard: the suite must never reconcile the real machine ---
 
 
-# Every step `ops.install()` runs, by the name the step list dispatches
-# through. Stubbing all of them leaves `install()` itself -- and, in the
-# fault-injection half below, the real `_reconcile_install_mode` -- as the
-# only live code.
-_INSTALL_STEPS = (
-    "_sync_packaged_resources",
-    "_clear_intentional_stops",
-    "_install_config",
-    "_report_orphaned_launchd_jobs",
-    "_stop_superseded_brew_services",
-    "_ensure_docker_engine",
-    "migrate_legacy_volumes",
-    "_reconcile_phantom_compose_app_containers",
-    "_ensure_web_deps",
-    "_ensure_mcp_deps",
-    "_ensure_cassandra_container",
-    "_install_cassandra_log_follower_service",
-    "_install_ollama_log_follower_service",
-    "_install_ollama_env_agent",
-    "_install_native_api",
-    "_install_native_web",
-    "_ensure_native_ollama_service",
-    "_ensure_required_models",
-    "_cleanup_stale_log_symlinks",
-    "sync_env_from_config",
-    "_generate_compose_config",
-)
+# The steps `ops.install()` runs, stubbed so `install()` itself -- and, in the
+# fault-injection half below, the real `_reconcile_install_mode` -- is the only
+# live code.
+#
+# Read from `ops_step_isolation.INSTALL_STEP_FUNCS`, which is the single source
+# of truth for that list and is held to `ops.install()` by
+# `tests/unit/test_ops_step_isolation.py`. This file used to keep its own copy
+# with nothing comparing the two, and it had already drifted: adding #4194's
+# `node runtime` step would have left `_ensure_declared_node` unpatched here --
+# a step that runs `brew install`/`sudo apt-get` -- and `_reconcile_running_api_build`
+# was unpatched already. One list with a guard, not two without one (D-066).
+_EXEMPT_FROM_STUBBING = {
+    # The subject of this file's fault-injection half (see the header above);
+    # the tests that need it mocked patch it themselves, at line scope.
+    "_reconcile_install_mode",
+}
+_INSTALL_STEPS = tuple(name for name in INSTALL_STEP_FUNCS if name not in _EXEMPT_FROM_STUBBING)
+
+
+def test_the_exemptions_are_steps_install_still_runs():
+    """An exemption for a step that is gone exempts nothing and hides its loss."""
+    live = set(INSTALL_STEP_FUNCS)
+    assert live >= _EXEMPT_FROM_STUBBING, (
+        "these names are exempted from stubbing but are not steps `ops.install()` runs: "
+        f"{sorted(_EXEMPT_FROM_STUBBING - live)}"
+    )
 
 
 def _dev_machine(monkeypatch, tmp_path):

@@ -1,0 +1,83 @@
+name: CodeQL Adjudications
+
+# WHICH QUESTION THIS JOB ANSWERS (#4222):
+#   "Is every open critical/high code-scanning alert on the release branch one
+#    this project has already examined and accepted?"
+#
+# A dismissed alert's identity includes its sink's LINE NUMBER, so moving a
+# dismissed sink re-raises the identical accepted finding as a new open alert.
+# That blocked v3.0.1 (alert 143 -> 144 after `_print_row` moved 3690 -> 3924)
+# and had already happened three times to one `ops doctor` flow (alerts
+# 21/22/23 -> 145). `security/codeql-adjudications.yml` holds the decisions
+# keyed to the FLOW instead; this job re-applies them and fails if anything
+# open is not in there. (Alert numbers carry no `#`: in rendered markdown that
+# is an issue link, and this repo's issues 21-146 are deleted.)
+#
+# EVENT-DRIVEN, NOT POLLED (CLAUDE.md first principle 1): `code_scanning_alert`
+# fires exactly when an alert is created or reopened on the default branch --
+# which is the release branch -- so there is no schedule to pay for. The
+# dispatch is for re-running it by hand and for checking another ref.
+
+on:
+  code_scanning_alert:
+    types: [created, reopened, appeared_in_branch]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to adjudicate (blank = the live release branch)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Decide and report without dismissing anything'
+        type: boolean
+        required: false
+        default: false
+# NOT on pull_request, deliberately. The first cut ran a dry-run on PRs that
+# touched the register, and `test_required_checks.py` was right to refuse it:
+# this job's verdict depends on which alerts are open on the RELEASE BRANCH, so
+# it would go red on a PR for a finding that PR never touched -- #4192's own
+# class, a required gate whose colour is not evidence about the commit. The
+# register's correctness on a PR is already covered where it belongs, by
+# `tests/unit/test_codeql_adjudications.py` under `ci-tests`: it parses, every
+# entry names a sink function, source functions and `enforced_by` tests that
+# exist in the tree, and every entry fits GitHub's comment limit -- all without
+# reading GitHub at all.
+
+permissions:
+  security-events: write
+  contents: read
+
+jobs:
+  adjudicate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Blank resolves to the live release line rather than a literal that
+      # names a retired branch long after the fact -- the same reasoning as
+      # `code_scan_report.yml`'s REF default.
+      SCAN_REF: ${{ inputs.ref || format('refs/heads/{0}', vars.RELEASE_BRANCH) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the register parser's one dependency
+        run: python -m pip install --quiet pyyaml
+
+      - name: Apply the adjudication register
+        env:
+          # Through `env:` and read as data, never interpolated into the shell
+          # body -- `scripts/agents/lib/workflow_script_guard.py` fails the
+          # build on the latter (#3820, #3837).
+          DRY_RUN: ${{ inputs.dry_run }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          DRY=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY="--dry-run"
+          fi
+          python scripts/agents/apply_codeql_adjudications.py \
+            --repo "$REPO" --ref "$SCAN_REF" $DRY

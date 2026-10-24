@@ -30,12 +30,14 @@ on:
   push:
     paths:
       - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/lib/acceptance_status.py"
       - "tests/test_gh_project_lib.sh"
       - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/assignment-dispatch-smoke.yml"
   pull_request:
     paths:
       - "scripts/agents/lib/gh_project.sh"
+      - "scripts/agents/lib/acceptance_status.py"
       - "tests/test_gh_project_lib.sh"
       - ".github/workflows/developer_auto_implement.yml"
       - ".github/workflows/assignment-dispatch-smoke.yml"

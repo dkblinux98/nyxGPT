@@ -308,6 +308,37 @@ def test_every_setup_node_step_reads_the_version_file():
     )
 
 
+def test_an_indirect_node_version_still_comes_from_the_declaration():
+    """`node-version: ${{ ... }}` is allowed, but only as a READ of the file.
+
+    One workflow genuinely cannot use `node-version-file`:
+    `developer_auto_implement.yml` runs from the release branch's definition
+    against a checked-out WORK branch, which may predate the version file, so a
+    step resolves the declaration in shell (work tree first, release branch as
+    the fallback) and `setup-node` consumes that step's output. The test above
+    cannot see the difference between that and an expression fed from a
+    hard-coded default, because neither is a literal at the `setup-node` step.
+
+    So the claim here is the one that matters: a workflow using the indirect
+    form must name the declaration file somewhere in it. An expression whose
+    value came from anywhere else is the same copy with an extra hop.
+    """
+    offenders: list[str] = []
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        if not re.search(r"node-version:\s*\$\{\{", text):
+            continue
+        if node_runtime.NODE_VERSION_FILE not in text:
+            offenders.append(f"  {workflow.name}")
+    assert not offenders, (
+        "These workflows feed `setup-node` an expression that does not come from "
+        f"`{node_runtime.NODE_VERSION_FILE}`:\n"
+        + "\n".join(offenders)
+        + f"\nResolve the version from `{node_runtime.NODE_VERSION_FILE}` in the step "
+        "that produces it, or use `node-version-file` directly."
+    )
+
+
 def test_some_workflow_actually_sets_node_up_from_the_file():
     """The converse of the test above: it must not pass by there being no Node.
 
