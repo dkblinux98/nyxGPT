@@ -1895,7 +1895,8 @@ rather than mechanism, and nothing can enforce them.
   sink legitimately accepts, and is set per sink rather than once for the
   module.** `self_heal.py` inlines one guard
   (`re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`) at nine sinks, because
-  CodeQL #4 recognizes that call form and not a constant or a helper. One of
+  CodeQL alert 4 recognizes that call form and not a constant or a helper.
+  One of
   those nine takes a *Homebrew formula* name, and Homebrew's versioned-formula
   syntax carries `@` — so the guard refused `nyxgpt-api@3.0.0rc`, which is
   what every candidate-channel install registers and what
@@ -3198,6 +3199,38 @@ rather than mechanism, and nothing can enforce them.
   `npm update <packages>` does the same within-range job.
   Source: #4192; related #4193; extends **D-066**, **D-075**.
 
+- **D-080** · 2026-10-23 · developer (#4222) — **An adjudicated
+  code-scanning finding is recorded in `security/codeql-adjudications.yml`,
+  keyed to the FLOW (rule id, sink function, accepted source symbols), and
+  never only in GitHub's per-alert dismissal state.** A dismissed alert's
+  identity includes its sink's *line number*, so any edit that shifts a
+  dismissed sink re-raises the identical accepted finding as a new open
+  alert — and nothing reports it until `scripts/release_ceremony.sh`'s
+  code-scanning gate refuses to release. That is what blocked v3.0.1: alert
+  143 (`cloud_deploy.py:3690`, `won't fix`) came back as alert 144 when
+  `_print_row` moved to `:3924`, and one `ops doctor` flow had already been
+  adjudicated three times (alerts 21, 22, 23) before returning a fourth as
+  alert 145. (Alert numbers, written without `#`: this repo's issues 21-146
+  were deleted, so `#143` here would autolink to an unrelated HTTP 410.)
+  `scripts/agents/apply_codeql_adjudications.py` re-applies the register and
+  exits non-zero on any open critical/high alert the register does not cover;
+  `.github/workflows/codeql_adjudications.yml` runs it on the
+  `code_scanning_alert` event, so nothing is polled. It fails closed both
+  ways — an unmatched alert is reported and never dismissed, and an entry
+  matches only when rule, sink file, sink function and every observed flow
+  source agree, so a new sensitive source reaching an accepted sink is a new
+  finding rather than an automatic dismissal. Each entry names the test that
+  keeps its reason true (`enforced_by`), per **D-067**'s rule that a rule this
+  project states but does not enforce is a class of its own. Two facts worth
+  not re-deriving:
+  inline `codeql[...]` / `lgtm[...]` suppression comments do **not** take
+  effect against this repo's CodeQL default setup (recorded at
+  `src/nyxgpt/ops.py` `_log_nonzero_exit`), and a flow's source is the symbol
+  CodeQL *labels* the step with, not the step's enclosing function — measured,
+  since alert 144's flows resolve to its two callers and alert 145's to its
+  own sink.
+  Source: #4222; related #4164, #4192; extends **D-066**, **D-067**.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -3579,3 +3612,29 @@ them.
   `tests/unit/test_blocking_gates_reach_pull_requests.py`, whose docstring
   carries the reasoning, and `web-gate-smoke.yml` is the executed evidence that
   the gate blocks in both directions.
+
+- **S-011** — ~~"Dismissing a code-scanning alert is a write no agent token
+  here holds: the reviewer names the verdict, the owner performs it"~~, and its
+  sibling ~~"agent sessions cannot call the code-scanning API directly"~~
+  (`agents/runbooks/review-runbook.md` §1f steps 4 and 1; `CLAUDE.md`
+  § Tooling; `scripts/agents/apply_codeql_adjudications.py` `_gh`;
+  `.github/workflows/code_scan_report.yml`'s header). Superseded 2026-10-24
+  by **D-080** and by measurement (#4222).
+  Both halves are false. The agent PAT these workflows carry holds `repo`,
+  which reaches `/code-scanning/alerts` **and** the
+  `application/sarif+json` analysis read — exercised directly in run
+  `40072136036` — and `scripts/agents/apply_codeql_adjudications.py` performed
+  the live dismissals of alerts 144/145, which read back
+  `dismissed_by: myGPT-developer-agent`. The sanctioned path is no longer an
+  owner-performed dismissal at all: the adjudication is an entry in
+  `security/codeql-adjudications.yml` and
+  `.github/workflows/codeql_adjudications.yml` applies it on the
+  `code_scanning_alert` event. Do not restore either sentence, and do not hand
+  a verdict to the owner instead of requiring the register entry — a dismissal
+  recorded only on the alert is the exact defect **D-080** retires. Dispatching
+  `code_scan_report.yml` remains correct where the review must *cite* the list
+  it read; it was never the only way to read it. The first sweep of this
+  retirement corrected the runbook and `CLAUDE.md` and missed the two code
+  copies, so the sentences are now held retired by
+  `tests/unit/test_codeql_adjudications.py::test_no_file_still_asserts_the_retired_access_premise`
+  — the guard, not the prose, is what keeps them gone.

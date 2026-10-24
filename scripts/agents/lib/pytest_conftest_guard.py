@@ -266,9 +266,57 @@ def loads_root_conftest(call: str) -> bool:
     )
 
 
+# One token, anchored, no quantifier over a quantifier: the pip executable as
+# a job actually spells it -- `pip`, `pip3`, `pip3.12`, or any of those behind
+# a path (`/usr/bin/pip`, `.venv/bin/pip3`).
+_PIP_EXECUTABLE_RE = re.compile(r"(?:.*/)?pip[0-9.]*$")
+
+# The editable target that means *this* package: `.`, `".[dev]"`, `'.'`.
+_EDITABLE_SELF_RE = re.compile(r"[\"']?\.")
+
+
 def installs_package(blob: str) -> bool:
-    """Whether the job pip-installs this repository's package."""
-    return bool(re.search(r"pip install\s+(--?\S+\s+)*-e\s+[\"']?\.", blob))
+    """Whether the job pip-installs this repository's package.
+
+    One forward pass over the blob's tokens, deliberately -- this used to be
+
+        re.search(r"pip install\\s+(--?\\S+\\s+)*-e\\s+[\"']?\\.", blob)
+
+    which CodeQL #146 (`py/redos`) flagged as exponential backtracking, and it
+    was right. `--?` can match one dash or two while `\\S+` matches the rest of
+    the same token *including* dashes, so every `--`-prefixed token admits two
+    parses, and a blob that ends without the `-e .` the pattern needs forces
+    the engine through all 2**k of them. Measured on the witness CodeQL
+    supplied -- ``"pip install -" + "-! -" * n`` -- it is 0.025s at n=18,
+    0.104s at n=20, 0.408s at n=22: four times the work for every two tokens
+    added. A contributor's workflow YAML is the input to this guard, so the
+    cost of the hang lands on a guard that then never reports anything, which
+    is this module's own defect class (#4192): a required check whose colour
+    is not evidence about the commit.
+
+    Tokens answer the same question with no backtracking at all. `install`
+    preceded by a pip executable opens a run of flags; `-e` followed by a
+    `.`-rooted target inside that run is the install this looks for; the
+    first non-flag token (`pyyaml`, `pytest`) closes it, because an `-e .`
+    after a positional belongs to some other command.
+
+    `tests/unit/test_pytest_conftest_guard.py::test_installs_package_is_not_a_redos`
+    holds the bound: the pathological input that took 0.4s at n=22 is checked
+    at n=4000.
+    """
+    tokens = blob.split()
+    in_install = False
+    for index, token in enumerate(tokens):
+        if token == "install" and index and _PIP_EXECUTABLE_RE.fullmatch(tokens[index - 1]):
+            in_install = True
+            continue
+        if not in_install:
+            continue
+        if token == "-e" and index + 1 < len(tokens) and _EDITABLE_SELF_RE.match(tokens[index + 1]):
+            return True
+        if not token.startswith("-"):
+            in_install = False
+    return False
 
 
 def _job_run_blob(job: dict) -> str:

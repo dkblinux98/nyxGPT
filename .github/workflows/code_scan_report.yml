@@ -1,10 +1,13 @@
 name: Code Scan Report
 
 # Read-only reporting: prints the open code-scanning alerts and the most
-# recent analyses for a ref into the run log, so agents (which cannot call
-# the code-scanning API directly) can read the current state via run logs
-# instead of asking the owner for a local `gh api` export. Uses the
-# built-in GITHUB_TOKEN -- `security-events: read` is all this needs.
+# recent analyses for a ref into the run log. What this exists for is a
+# CITABLE run URL -- `agents/runbooks/review-runbook.md` §1f asks the review
+# to cite the list it read, and a run log is evidence a session's own `gh api`
+# read is not. It is not an access wall: the agent PAT holds `repo` and
+# reaches /code-scanning/alerts directly (ledger **S-011**), so use the direct
+# read to answer a question and this dispatch when a run has to be cited.
+# Uses the built-in GITHUB_TOKEN -- `security-events: read` is all this needs.
 
 on:
   workflow_dispatch:

@@ -48,6 +48,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -241,11 +242,54 @@ def test_loads_root_conftest_decides_correctly(call: str, loads: bool) -> None:
         ("python -m pip install --quiet -e .", True),
         ("python -m pip install --quiet pyyaml pytest", False),
         ("python -m pip install --quiet pytest pyyaml psutil", False),
+        # Spellings the token scan that replaced the #146 regex also has to
+        # keep answering the same way. A positional before the `-e` belongs to
+        # a different command, and `-e` without a `.`-rooted target is not
+        # this package.
+        ("python -m pip install --quiet -e '.[dev]'", True),
+        ("  pip   install   -e   .  ", True),
+        ("pip install -r requirements.txt", False),
+        ("pip install -e /opt/other-package", False),
+        ("pip install pyyaml\npython -m pytest -e .", False),
+        ("pipx install nyxgpt -e .", False),
     ],
 )
 def test_installs_package_recognises_the_real_spellings(blob: str, installs: bool) -> None:
-    """All five spellings are lifted from jobs in this repository."""
+    """The first five spellings are lifted from jobs in this repository."""
     assert guard.installs_package(blob) is installs
+
+
+def test_installs_package_is_not_a_redos() -> None:
+    """CodeQL #146 (`py/redos`), with the witness it supplied.
+
+    The regex this replaced -- ``pip install\\s+(--?\\S+\\s+)*-e\\s+["']?\\.``
+    -- backtracked exponentially on ``"pip install -" + "-! -" * n``: 0.025s
+    at n=18, 0.104s at n=20, 0.408s at n=22. Four times the work for every two
+    tokens, so n=40 is hours and n=4000 never returns.
+
+    n=4000 here, with a wall-clock bound rather than an eyeball. The bound is
+    loose on purpose -- a shared runner is not a quiet machine, and this test
+    exists to separate "linear" from "exponential", which is five orders of
+    magnitude of headroom, not a performance regression alarm.
+    """
+    pathological = "pip install -" + "-! -" * 4000
+
+    start = time.perf_counter()
+    result = guard.installs_package(pathological)
+    elapsed = time.perf_counter() - start
+
+    assert result is False
+    assert elapsed < 1.0, f"installs_package took {elapsed:.3f}s on {len(pathological)} chars"
+
+
+def test_installs_package_still_answers_yes_under_the_pathological_prefix() -> None:
+    """The bound is not bought by giving up on the question.
+
+    A scan that bailed out early would pass the test above and silently stop
+    recognising the install, which would make every job carrying one look like
+    a violation.
+    """
+    assert guard.installs_package("pip install " + "--flag " * 4000 + "-e .") is True
 
 
 def test_a_pip_install_of_pytest_is_not_a_pytest_call() -> None:
