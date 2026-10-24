@@ -115,16 +115,12 @@ def test_the_mismatch_word_grepped_for_is_the_one_status_prints(script, capsys):
     )
 
 
-def test_another_subjects_mismatch_is_not_read_as_the_api_builds(script, tmp_path, capsys):
-    """Executed, in both directions: the real helper against a real transcript.
-
-    A `node` of the wrong major and an api build that matches is a state a
-    macOS runner reaches on its own, so the transcript below is the one the
-    injection half actually sees. The retired whole-file `grep` is run beside
-    the shipped helper to show the difference is the fix and not the fixture.
-    """
+def _api_match_then_node_mismatch(capsys, *, squeezed: bool) -> str:
+    """What `ops status` prints for a matching api build followed by a Node of
+    the wrong major -- the state a macOS runner reaches on its own."""
     from nyxgpt import node_runtime
 
+    capsys.readouterr()
     ops._print_running_api_build(
         ops.BuildDrift(
             state=ops.BUILD_MATCH,
@@ -135,23 +131,52 @@ def test_another_subjects_mismatch_is_not_read_as_the_api_builds(script, tmp_pat
             remediation="",
         )
     )
-    api_block = capsys.readouterr().out
-
-    monkey = node_runtime.NodeRuntimeReport(
+    wrong_major = node_runtime.NodeRuntimeReport(
         state=node_runtime.NODE_MISMATCH,
         path="/opt/homebrew/bin/node",
-        version="v26.11.0",
-        major=26,
+        version="v22.23.2",
+        major=22,
         declared_major=node_runtime.NODE_MAJOR,
         detail="wrong major",
         remediation=node_runtime.NODE_REMEDIATION_COMMAND,
     )
+    with patch.object(node_runtime, "node_version_report", return_value=wrong_major):
+        ops._print_node_runtime()
+    printed = capsys.readouterr().out
+    if squeezed:
+        printed = "\n".join(line for line in printed.splitlines() if line.strip()) + "\n"
+    return printed
+
+
+def test_the_node_runtime_line_is_its_own_section(capsys):
+    """The producer half: `Node runtime` opens with a blank line, as every
+    other `ops status` section header does, so an operator does not read its
+    verdict as the api build's either."""
+    printed = _api_match_then_node_mismatch(capsys, squeezed=False)
+    assert "\n\nNode runtime (web tier): MISMATCH" in printed, printed
+
+
+@pytest.mark.parametrize("squeezed", [False, True], ids=["as-printed", "no-blank-lines"])
+def test_another_subjects_mismatch_is_not_read_as_the_api_builds(
+    script, tmp_path, capsys, squeezed
+):
+    """Executed, in both directions: the real helper against a real transcript.
+
+    A `node` of the wrong major and an api build that matches is a state a
+    macOS runner reaches on its own, so the transcript below is the one the
+    injection half actually sees. The retired whole-file `grep` is run beside
+    the shipped helper to show the difference is the fix and not the fixture.
+
+    The transcript comes from the two real printers, called in the order
+    `status` calls them -- never from hand-typed separators. The first version
+    of this test wrote the blank line before `Node runtime` itself, which the
+    printer did not emit; it passed here while run 40090506617 failed live on
+    exactly that difference. The `squeezed` case removes every blank line, so
+    the reader is also proven not to depend on the printer's spacing.
+    """
     transcript = tmp_path / "status.log"
     transcript.write_text(
-        api_block
-        + f"\nNode runtime (web tier): MISMATCH -- nyxGPT declares Node {monkey.declared_major}\n"
-        f"      {monkey.detail}\n",
-        encoding="utf-8",
+        _api_match_then_node_mismatch(capsys, squeezed=squeezed), encoding="utf-8"
     )
 
     helper = subprocess.run(

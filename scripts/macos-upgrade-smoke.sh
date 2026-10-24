@@ -402,8 +402,18 @@ run_driver() {
 # `grep ... <<<"$block"` rather than `sed ... | grep`: a reader that leaves
 # early takes the producer's EPIPE under `pipefail` (#4192), which
 # `tests/unit/test_sigpipe_pipeline_guard.py` fails the build over.
+#
+# The block ends at the first blank line OR the next unindented line, whichever
+# comes first. Every line a subject prints under its header is indented; the
+# next subject's header is not. Ending on the blank line alone made this reader
+# depend on every later section remembering to open with one, and the Node
+# runtime line did not: run 40090506617 read its `MISMATCH` as the api
+# build's and failed the injection half while the injected comparison reported
+# a match. `awk` reads the file itself, so there is no pipe to break.
 api_build_block() {
-  sed -n '/^Running api build/,/^$/p' "$1"
+  awk '/^Running api build/ { on = 1; print; next }
+       on && (/^$/ || /^[^ ]/) { exit }
+       on { print }' "$1"
 }
 
 api_build_says_mismatch() {
@@ -496,7 +506,7 @@ fi
 if grep -qF "$NEW_KEG" "$WORK/status.log"; then
   pass "status names the installed keg's venv, resolved to the version it is"
 else
-  sed -n '/Running api build/,/^$/p' "$WORK/status.log"
+  api_build_block "$WORK/status.log"
   fail "nyxgpt ops status did not print the installed prefix under $NEW_KEG"
 fi
 if grep -qF 'nyxgpt ops restart api' "$WORK/status.log"; then

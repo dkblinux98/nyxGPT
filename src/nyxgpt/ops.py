@@ -15834,12 +15834,18 @@ def _print_node_runtime() -> None:
 
     Same report object the Infrastructure page renders and `doctor` flags, so
     the three cannot disagree about one host.
+
+    Opens with a blank line, like every other `ops status` section header.
+    Without it this line printed flush under the api-build block, so its
+    `MISMATCH` read as part of that block -- to an operator, and to the
+    macOS upgrade smoke's block reader, which failed the injection half on a
+    runner whose Node was the wrong major while the api build matched.
     """
     report = node_runtime.node_version_report()
     if report.ok:
-        print(f"Node runtime (web tier): {report.version} at {report.path}")
+        print(f"\nNode runtime (web tier): {report.version} at {report.path}")
         return
-    print(f"Node runtime (web tier): MISMATCH -- nyxGPT declares Node {report.declared_major}")
+    print(f"\nNode runtime (web tier): MISMATCH -- nyxGPT declares Node {report.declared_major}")
     print(f"      {report.detail}")
     print(f"      Repair: {report.remediation}")
 
