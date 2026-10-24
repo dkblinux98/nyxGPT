@@ -427,19 +427,39 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
 **How to run the check.**
 
 1. **Dispatch** [`code_scan_report.yml`](../../.github/workflows/code_scan_report.yml)
-   (`workflow_dispatch`, optional `ref` input) and read its run log. This is
-   the supported agent path — agent sessions cannot call the code-scanning API
-   directly (`CLAUDE.md` § Tooling). The log prints recent analyses, the open
-   alert list with `TOTAL_OPEN`, and every SARIF `codeFlow` per open alert.
+   (`workflow_dispatch`, optional `ref` input) and read its run log. The log
+   prints recent analyses, the open alert list with `TOTAL_OPEN`, and every
+   SARIF `codeFlow` per open alert, and the run URL is what this gate asks the
+   review to cite — a citable run is the point, not an access wall. The agent
+   PAT these workflows carry holds `repo`, which **does** reach
+   `/code-scanning/alerts` and the `application/sarif+json` analysis read
+   directly (verified 2026-10-24, #4222, run `40072136036`); use the direct
+   read when you only need to answer a question, and the dispatch when the
+   review has to cite the list it read.
 2. **Report `TOTAL_OPEN`** in the review body, in a `### Code Scanning`
    section, so an empty result is distinguishable from a check never run.
 3. **Cross-reference the diff.** For each open alert, check whether its
    `file:line` is in a file this PR touches.
-4. **Read the alert before classifying it.** A dismissal is a claim about the
-   whole flow to the sink, not about the line — trace it. Note the 280-character
-   cap on dismissal rationales (ledger **V-029**) and that dismissal itself is
-   a code-scanning *write* no agent token here holds: the reviewer names the
-   verdict, the owner performs it.
+4. **Read the alert before classifying it, and require the adjudication in the
+   repository.** A dismissal is a claim about the whole flow to the sink, not
+   about the line — trace it. **An accepted finding is recorded in
+   [`security/codeql-adjudications.yml`](../../security/codeql-adjudications.yml),
+   keyed to the flow, and never only in GitHub's per-alert dismissal state**
+   (ledger **D-080**): that state's identity includes the sink's *line number*,
+   so any edit that moves a dismissed sink re-raises the identical accepted
+   finding, and nothing reports it until the release ceremony's gate refuses to
+   release. What the reviewer checks is therefore the register entry — the
+   traced flow, a `reason` GitHub accepts, and an `enforced_by` test that
+   actually keeps the premise true (#4174) — not a verdict in prose;
+   [`codeql_adjudications.yml`](../../.github/workflows/codeql_adjudications.yml)
+   performs the write on the `code_scanning_alert` event, and an alert the
+   register does not match is reported and never dismissed. GitHub caps
+   `dismissed_comment` at 280 characters, which is why an entry puts a one-line
+   `headline` plus a register pointer on the alert and keeps the argument in the
+   file; the cap is checked when the register *loads*
+   (`MAX_DISMISSAL_COMMENT`, `scripts/agents/lib/codeql_adjudications.py`), so
+   an over-long entry fails the parse instead of 422-ing part-way through a run
+   with some alerts dismissed and the rest not.
 5. **When a PR claims to *close* an alert, count the flows.** An alert is one
    sink with *N* source→sink paths, and it stays open while **any** of them
    lives — `code_scan_report.yml` dumps every `codeFlow` per result for exactly
@@ -447,13 +467,16 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
    redacts the flow it happened to read is not a fix; it is a rescan away from
    the same alert with a new sink line.
 
-**Blocking conditions.** All three are Medium:
+**Blocking conditions.** All four are Medium:
 
 - an alert whose `file:line` lies in the diff, unless the review states why it
   is a false positive and traces the flow that makes it one;
 - a review that never read the list — the whole failure mode this gate exists
   to close;
-- a PR claiming to close an alert without accounting for every `codeFlow` on it.
+- a PR claiming to close an alert without accounting for every `codeFlow` on it;
+- an alert accepted rather than fixed with no entry in
+  `security/codeql-adjudications.yml` — a dismissal recorded only on the alert
+  is the **D-080** defect, and it comes back at the next line shift.
 
 **Motivating incident for the flow count (#3837, acceptance failure).** PR
 #3899 was merged claiming alert #123 fixed. It had three flows: the developer

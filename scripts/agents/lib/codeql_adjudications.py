@@ -72,8 +72,13 @@ REGISTER_PATH = REPO_ROOT / "security" / "codeql-adjudications.yml"
 VALID_REASONS = frozenset({"false positive", "won't fix", "used in tests"})
 
 #: The severities `scripts/release_ceremony.sh`'s gate blocks a release on, so
-#: the severities this has to keep clear. Lower ones are reported but never
-#: dismissed -- nothing is gated on them, so no automation needs to touch them.
+#: the severities this has to keep clear. This filter decides only which
+#: UNADJUDICATED alerts fail the run (`MatchReport.blocking_unadjudicated`):
+#: an open medium the register does not cover is reported, not an error,
+#: because nothing is gated on it. Matching and dismissal apply at EVERY
+#: severity -- an entry in the register is a traced adjudication of that flow
+#: whatever severity CodeQL assigned it, and holding the dismissal back would
+#: leave the alert open against a reason the repository already records.
 BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 
 #: `sink` for a sink at module level, where there is no enclosing function.
