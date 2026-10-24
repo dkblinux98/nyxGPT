@@ -18,6 +18,14 @@ in a CI log:
 |---|---|---|
 | [`pip-audit-ignore.txt`](pip-audit-ignore.txt) | pip-audit | One vuln ID per line, `#`-commented justification above each entry |
 | [`../web/audit-ci.jsonc`](../web/audit-ci.jsonc) | npm audit (via `audit-ci`) | JSONC `allowlist` array, **path-scoped entries only**: advisory ID, `\|`, then the `>`-separated dependency path (e.g. `GHSA-vfj7-8cjw-p6xm\|@ducanh2912/next-pwa>fast-glob>micromatch>braces`), reasoning in a full-line `//` comment above each. A bare module name or advisory ID fails the build |
+| [`codeql-adjudications.yml`](codeql-adjudications.yml) | CodeQL (GitHub default setup) | YAML `adjudications` list keyed to the **flow** (rule, sink function, source function) rather than the alert, so an edit that only moves the sink does not re-raise an accepted finding (#4222). Each entry carries a `headline` (lands on the alert, 280-char cap) and a `comment` (the full argument, stays here) |
+
+The CodeQL row is not a fourth CI scanner: CodeQL runs as GitHub's default
+setup, and `.github/workflows/codeql_adjudications.yml` applies these
+adjudications on the `code_scanning_alert` event via
+`scripts/agents/apply_codeql_adjudications.py`. **Never dismiss a code-scanning
+alert by hand** — that state is keyed to the sink's line number, so the next
+edit that moves the sink re-raises the identical accepted finding.
 
 Bandit has no separate suppression file here: its official mechanism is an
 inline `# nosec <RULE_ID> -- <reason>` comment at the flagged line (see
