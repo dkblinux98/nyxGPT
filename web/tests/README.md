@@ -79,13 +79,14 @@ export const handlers = [
 
 ## Node Version Compatibility
 
-**Current Configuration:**
-- Node v20.11.1 (system version)
-- happy-dom v20.x (compatible with Node 20.11.1)
-- Vitest v4.x
-- React Testing Library v16.x
+**Current Configuration** — read it from the living source, not from here:
 
-**Note:** Some packages (Vite, @vitejs/plugin-react) show engine warnings but work correctly with Node 20.11.1. Future updates may require Node 20.19.0+.
+- The Node version the gates run on is `node-version` in `.github/workflows/ci-tests.yml` (the `web` job) and `security-scan.yml`.
+- The test-stack versions (`happy-dom`, `vitest`, `@testing-library/*`) are the declared ranges in `web/package.json`; the exact resolved versions are in `web/package-lock.json`.
+
+This section used to restate those version numbers, and they rotted: it still claimed "happy-dom v20.x" after #4221 moved the floor to `^21.0.4` to clear GHSA-834v-8h66-3h79. Security remediation moves these ranges on the advisory's schedule, not on a documentation schedule, so a copy here is wrong by default. The floors are enforced by `tests/unit/test_npm_dependency_floors.py`, which reads the manifests rather than a prose copy of them.
+
+**Note:** some packages (Vite, `@vitejs/plugin-react`) emit engine warnings under the Node version above but run correctly; their own `engines` fields are the authority on what they require.
 
 ## Known Limitations
 
