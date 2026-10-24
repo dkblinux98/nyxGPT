@@ -117,6 +117,7 @@ fails if it drifts. Do not hand-edit.
 | `validate-web-routes.yml` | pull_request, push | Web Validation |
 | `verify_phase6_issues.yml` | workflow_dispatch | Verify Phase 6 Issue Fields |
 | `web-gate-smoke.yml` | pull_request, push | Web Gate Smoke |
+| `web-icon-declaration-smoke.yml` | pull_request, push, workflow_dispatch | Web Icon Declaration Smoke |
 
 ## Agent scripts (`scripts/agents/`)
 
