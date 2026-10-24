@@ -29,10 +29,11 @@ Deliberate design choices, both of which exist to keep the guard green-able:
   ignore list here would make a second copy of a decision `.gitignore` already
   owns, so the index is the single source.
 * **A reference is a string match, basename or URL path.** Assets are
-  addressed as URLs in TSX, in `manifest.json` and in config, sometimes built
-  up at runtime, so there is no import graph to walk. Matching the basename as
-  well as the rooted path can let a coincidental hit pass; that is the right
-  way to err -- a guard with false failures is a guard people delete.
+  addressed as URLs in TSX, in the generated web app manifest and in config,
+  sometimes built up at runtime, so there is no import graph to walk. Matching
+  the basename as well as the rooted path can let a coincidental hit pass;
+  that is the right way to err -- a guard with false failures is a guard
+  people delete.
 """
 
 from __future__ import annotations
@@ -47,8 +48,10 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Where a `web/public/` asset may legitimately be referenced from. Exactly the
-#: places the application reads one: the UI and its tests, the PWA manifest
-#: (itself referenced by `layout.tsx`), and the Next/Docker build config.
+#: places the application reads one: the UI and its tests -- which since #4235
+#: includes the generated PWA manifest, `web/src/app/manifest.ts`, and the icon
+#: inventory it derives from, `web/src/lib/appIcons.ts` -- and the Next/Docker
+#: build config.
 #:
 #: `web/README.md` is deliberately absent. Prose naming an asset is not the UI
 #: displaying it, and counting it would let a sentence in a document keep a
@@ -60,7 +63,13 @@ _REFERRER_FILES = (
     "web/.dockerignore",
     "web/package.json",
 )
-#: Public files that are themselves referrers: `manifest.json` names the icons.
+#: Public files that are themselves referrers -- a JSON or manifest file in
+#: `web/public/` can name other published assets. There are none today: #4235
+#: replaced the hand-written `web/public/manifest.json` with the generated
+#: `web/src/app/manifest.ts` route, which the referrer *dirs* above already
+#: cover. The mechanism stays because the next published config file to land
+#: here would need it, and because the self-reference exclusion below is the
+#: non-obvious part of getting it right.
 _REFERRER_PUBLIC_SUFFIXES = (".json", ".webmanifest")
 
 #: The scaffold assets #4233 removed, pinned so a future generator run or a
@@ -104,9 +113,10 @@ def _tracked_files() -> tuple[str, ...]:
 def _read_text(path: Path) -> str:
     """File text, or `""` for anything that is not decodable UTF-8.
 
-    `web/src/app/icon.png` is a tracked file in a referrer directory: Next's
-    app-directory icon convention puts images in source. A binary in the
-    corpus contributes no references, it does not stop the sweep.
+    A referrer directory can hold a binary -- #4233 hit `web/src/app/icon.png`,
+    which Next's app-directory icon convention put in source before #4235
+    retired that mechanism. A binary in the corpus contributes no references;
+    it does not stop the sweep.
     """
     try:
         return path.read_text(encoding="utf-8")
@@ -131,9 +141,9 @@ def _public_referrer_texts(tracked: tuple[str, ...]) -> dict[str, str]:
     """Public files that are themselves referrers, keyed by path.
 
     Kept separate from the application corpus so a file cannot vouch for
-    itself. `manifest.json` is both a referrer and a published asset, and it
-    names itself in no field -- but an asset that mentioned its own filename
-    (an SVG titled after itself) would otherwise certify its own reachability.
+    itself. An asset that mentioned its own filename -- an SVG titled after
+    itself, a JSON config naming its own path -- would otherwise certify its
+    own reachability.
     """
     return {
         path: _read_text(REPO_ROOT / path)
@@ -148,7 +158,7 @@ TRACKED_FILES: tuple[str, ...] = _tracked_files()
 def test_the_inventory_is_not_empty():
     """A broken enumeration would make every assertion below vacuously true."""
     assets = _public_assets(TRACKED_FILES)
-    assert "web/public/manifest.json" in assets
+    assert "web/public/favicon.ico" in assets
     assert "web/public/nyxGPT-logo.png" in assets
     assert "web/src/app/layout.tsx" in TRACKED_FILES
     assert not any(p.startswith("web/node_modules/") for p in TRACKED_FILES)
@@ -173,8 +183,8 @@ def test_no_published_web_asset_is_unreferenced():
             orphans.append(asset)
     assert not orphans, (
         f"{orphans} are published at their URLs by every nyxGPT install and "
-        "referenced by nothing in web/src, web/tests, web/public/manifest.json "
-        "or the Next/Docker config. Either reference the asset from the surface "
+        "referenced by nothing in web/src, web/tests or the Next/Docker "
+        "config. Either reference the asset from the surface "
         "that should display it, or delete it -- `web/public/` has no inert "
         "files, only files nobody has noticed are public (#4233)."
     )
