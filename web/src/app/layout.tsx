@@ -8,6 +8,7 @@ import AppUpdateBanner from "../components/AppUpdateBanner";
 import ServiceWorkerVersionGuard from "../components/ServiceWorkerVersionGuard";
 import HydrationWatchdog from "../components/HydrationWatchdog";
 import HydrationMarker from "../components/HydrationMarker";
+import { linkIcons } from "../lib/appIcons";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,16 +23,12 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "nyxGPT",
   description: "Your private AI assistant powered by local LLMs",
-  icons: {
-    icon: [
-      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
-      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
-      { url: "/favicon.ico", sizes: "any" },
-    ],
-    shortcut: "/favicon.ico",
-    apple: "/apple-touch-icon.png",
-  },
-  manifest: "/manifest.json",
+  // Derived, never restated (#4235): `lib/appIcons.ts` is the only place an
+  // icon URL is written down, and `app/manifest.ts` derives the web app
+  // manifest's `icons` from the same module. `metadata.manifest` is absent on
+  // purpose -- the `app/manifest.ts` convention emits its own
+  // `<link rel="manifest">`, and setting both would put two in the head.
+  icons: linkIcons(),
 };
 
 export const viewport: Viewport = {

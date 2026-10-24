@@ -89,6 +89,18 @@ web
 the-web-gate-blocks-a-regression
 the-gate-guards-are-not-vacuous
 a-deleted-file-does-not-redden-the-gate
+# web-icon-declaration-smoke.yml (#4235). Required, and path-filtered to the
+# icon surface so it is absent -- and free -- on essentially every PR. It is
+# the executed evidence that the shipped build declares ONE set of icons: the
+# unit guard can see the source tree is single-sourced, but what Next puts in
+# the rendered `<head>` and which routes it publishes are build output, and
+# that is exactly where #4235 hid -- `/icon.png` and `/apple-icon.png` were
+# published on every install, no `<link>` named either, and every test was
+# green. Fault-injected in both directions: the pre-#4235 file-convention
+# icons are put back and the check must REJECT that build, and one line of the
+# inventory is edited and the rendered `<link rel="icon">` must follow. A red
+# one means the app is back to telling the browser two things about its icons.
+the-built-head-names-one-set-of-icons
 
 # Smoke jobs. These are this project's executed-verification evidence (D-006);
 # a red one is a real defect on the head, which is precisely what the developer

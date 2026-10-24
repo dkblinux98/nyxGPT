@@ -1,0 +1,168 @@
+name: Web Icon Declaration Smoke
+
+# Does the shipped build tell the browser about ONE set of icons? (#4235)
+#
+# The unit guard `tests/unit/test_web_icon_declaration_is_single_sourced.py`
+# reads the source tree: one module holds every icon URL, both derivations
+# import it, no `app/icon.*` file-convention image exists. That is the inputs.
+# It cannot see the OUTPUT -- which `<link>` tags Next puts in the rendered
+# `<head>` and which routes it publishes -- because those are produced by the
+# framework at build time, and that is precisely where #4235 hid: both source
+# images were real, both routes (`/icon.png`, `/apple-icon.png`) were real and
+# published on every install, every test was green, and no `<link>` in the
+# shipped HTML named either one. Editing them changed nothing.
+#
+# So this job runs the real `npm run build` and reads what it produced, in
+# BOTH directions (#3753's template -- a job that only runs the happy path
+# passes on every machine that fails to reproduce the bug):
+#
+#   PHASE 1  the tree as it ships -> scripts/ci/check_web_icon_declaration.py
+#            must PASS: one `<link rel="manifest">` at the generated
+#            `/manifest.webmanifest`, every icon the `<head>` names present in
+#            the generated manifest (bar the documented `favicon.ico`), and no
+#            file-convention icon route published.
+#
+#   PHASE 2  `app/icon.png` and `app/apple-icon.png` put back -- the exact
+#            pre-#4235 shape -- rebuilt, and the SAME check must FAIL. A check
+#            that cannot fail is not evidence, and this is the one failure mode
+#            inspection demonstrably missed for the life of the repository.
+#
+#   PHASE 3  one line of the icon inventory edited, rebuilt, and the rendered
+#            `<link rel="icon">` must CHANGE to match. This is the acceptance
+#            criterion that the authoritative file is actually authoritative;
+#            it is unfalsifiable without a build.
+#
+# Path-filtered to the icon surface, so it is absent -- and free -- on
+# essentially every PR (`.github/required-checks.txt`: absent is not pending).
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/web-icon-declaration-smoke.yml'
+      - 'scripts/ci/check_web_icon_declaration.py'
+      - 'tests/unit/test_web_icon_declaration_is_single_sourced.py'
+      - 'web/src/lib/appIcons.ts'
+      - 'web/src/app/layout.tsx'
+      - 'web/src/app/manifest.ts'
+      - 'web/public/**'
+  push:
+    paths:
+      - '.github/workflows/web-icon-declaration-smoke.yml'
+      - 'scripts/ci/check_web_icon_declaration.py'
+      - 'tests/unit/test_web_icon_declaration_is_single_sourced.py'
+      - 'web/src/lib/appIcons.ts'
+      - 'web/src/app/layout.tsx'
+      - 'web/src/app/manifest.ts'
+      - 'web/public/**'
+  workflow_dispatch:
+
+jobs:
+  the-built-head-names-one-set-of-icons:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      # ── PHASE 1 ────────────────────────────────────────────────────────────
+      - name: Build the web app as it ships
+        run: cd web && npm run build
+
+      - name: The rendered head and the generated manifest agree
+        run: |
+          set -euo pipefail
+          echo "--- rendered icon metadata (web/.next/server/app/settings.html) ---"
+          grep -oE '<link rel="(icon|shortcut icon|apple-touch-icon|manifest)"[^>]*>' \
+            web/.next/server/app/settings.html
+          echo "--- generated /manifest.webmanifest ---"
+          cat web/.next/server/app/manifest.webmanifest.body
+          echo
+          python3 scripts/ci/check_web_icon_declaration.py
+
+      # ── PHASE 2: the injected half ─────────────────────────────────────────
+      # Restores the pre-#4235 tree exactly: two app-directory icon images that
+      # are byte copies of assets already in web/public/, which is how they got
+      # there and why nobody noticed.
+      - name: Put the pre-4235 file-convention icons back
+        run: |
+          set -euo pipefail
+          cp web/public/nyxGPT-logo-512.png web/src/app/icon.png
+          cp web/public/apple-touch-icon.png web/src/app/apple-icon.png
+          cd web && npm run build
+
+      - name: The check REJECTS the two-mechanism build
+        run: |
+          set -euo pipefail
+          echo "--- published app routes matching the icon file convention ---"
+          python3 -c "
+          import json
+          routes = json.load(open('web/.next/app-path-routes-manifest.json'))
+          print(sorted(r for r in routes.values() if 'icon' in r))
+          "
+          if python3 scripts/ci/check_web_icon_declaration.py > /tmp/injected.log 2>&1; then
+            cat /tmp/injected.log
+            echo "::error::check_web_icon_declaration.py PASSED a build that publishes \
+          /icon.png and /apple-icon.png from the app-directory file convention. That is \
+          the #4235 defect verbatim, so the check is not evidence of anything."
+            exit 1
+          fi
+          cat /tmp/injected.log
+          grep -q "file convention" /tmp/injected.log || {
+            echo "::error::the check failed, but not for the injected reason -- \
+          it must name the file-convention routes it rejected"
+            exit 1
+          }
+          echo "the check rejects the two-mechanism build, as it must"
+
+      - name: Remove the injected icons
+        run: rm -f web/src/app/icon.png web/src/app/apple-icon.png
+
+      # ── PHASE 3: the authoritative file is authoritative ───────────────────
+      # #4235's third acceptance criterion. Before the fix, editing
+      # web/src/app/icon.png changed nothing in the rendered head; the point of
+      # a single source is that editing it changes both derivations.
+      - name: Editing the inventory changes the rendered head and the manifest
+        run: |
+          set -euo pipefail
+          sed -i "s|{ url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },|{ url: '/nyxGPT-logo-192.png', sizes: '192x192', type: 'image/png' },|" \
+            web/src/lib/appIcons.ts
+          grep -q "nyxGPT-logo-192.png', sizes: '192x192', type: 'image/png' }," \
+            web/src/lib/appIcons.ts || {
+            echo "::error::the inventory edit did not apply -- appIcons.ts no longer has \
+          the line this phase patches, so the phase proves nothing. Update the sed."
+            exit 1
+          }
+          cd web && npm run build
+          cd ..
+          echo "--- rendered head with the inventory edited ---"
+          grep -oE '<link rel="icon"[^>]*>' web/.next/server/app/settings.html
+          grep -q 'href="/nyxGPT-logo-192.png" sizes="192x192"' \
+            web/.next/server/app/settings.html || {
+            echo "::error::the inventory was edited and the rendered <link rel=\"icon\"> \
+          did not follow. web/src/lib/appIcons.ts is not actually authoritative (#4235)."
+            exit 1
+          }
+          grep -q '"src":"/nyxGPT-logo-192.png","sizes":"192x192"' \
+            web/.next/server/app/manifest.webmanifest.body || {
+            echo "::error::the inventory was edited and the generated manifest did not \
+          follow, so the two derivations have diverged (#4235)."
+            exit 1
+          }
+          grep -q 'href="/favicon-16x16.png"' web/.next/server/app/settings.html && {
+            echo "::error::the replaced icon is STILL in the rendered head, so something \
+          other than the inventory is declaring it (#4235)."
+            exit 1
+          }
+          git checkout -- web/src/lib/appIcons.ts
+          echo "editing the single source moves both derivations, as it must"

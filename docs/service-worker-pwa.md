@@ -41,18 +41,32 @@ Implemented offline support for nyxGPT using a service worker with intelligent c
 - Standalone display mode (full-screen app-like experience)
 - Theme color: #0070f3
 - Portrait orientation
-- App icons configured
+- App icons derived from the single icon inventory (see below)
+
+The manifest is **generated**, not a static file, and is served at
+`/manifest.webmanifest` — Next's `app/manifest.ts` convention, which also emits
+the page's `<link rel="manifest">`. It replaced a hand-written
+`web/public/manifest.json` in #4235, because that file's `icons` array was a
+third independent copy of the app's icon list and could drift away from the
+`<link rel="icon">` tags without any one edit looking wrong.
+
+`web/src/lib/appIcons.ts` is now the only place an icon URL is written down.
+Both the manifest's `icons` and `metadata.icons` in `web/src/app/layout.tsx`
+derive from it, and `tests/unit/test_web_icon_declaration_is_single_sourced.py`
+fails the build if an icon URL appears anywhere else, if Next's `app/icon.*`
+file convention reappears, or if either derivation stops importing the module.
 
 ## Files Added/Modified
 
 ### Configuration
 - `web/next.config.ts`: Service worker configuration with @ducanh2912/next-pwa
-- `web/public/manifest.json`: PWA manifest for app metadata
+- `web/src/app/manifest.ts`: generates the PWA manifest at `/manifest.webmanifest`
+- `web/src/lib/appIcons.ts`: the single source for every icon URL
 - `web/.gitignore`: Excludes generated service worker files
 
 ### Pages
 - `web/src/app/offline/page.tsx`: Offline fallback page
-- `web/src/app/layout.tsx`: Added manifest and PWA metadata
+- `web/src/app/layout.tsx`: PWA metadata; `metadata.icons` derived from `lib/appIcons.ts`
 
 ### Generated Files (Git-ignored)
 - `public/sw.js`: Service worker script
