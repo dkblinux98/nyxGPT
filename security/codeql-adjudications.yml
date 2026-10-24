@@ -8,15 +8,17 @@
 # alert -- and nothing reports it until `scripts/release_ceremony.sh`'s
 # code-scanning gate refuses to release.
 #
-# It has happened at least five times:
+# It has happened at least five times (ALERT numbers, written without a `#`:
+# this text is quoted into markdown, where `#143` links to *issue* 143, and
+# this repo's issues 21-146 are deleted):
 #
-#   * #143  cloud_deploy.py:3690  `won't fix`  -- `_print_row` moved to :3924
-#     and came back as #144, two weeks before v3.0.1's ceremony.
-#   * #21   ops.py:16965          `false positive`
-#     #22   ops.py:17913          `false positive`
-#     #23   ops.py:17914          `false positive`  -- the same `doctor()`
+#   * alert 143  cloud_deploy.py:3690  `won't fix`  -- `_print_row` moved to
+#     :3924 and came back as alert 144, two weeks before v3.0.1's ceremony.
+#   * alert 21   ops.py:16965          `false positive`
+#     alert 22   ops.py:17913          `false positive`
+#     alert 23   ops.py:17914          `false positive`  -- the same `doctor()`
 #     issue-list flow, adjudicated three times at three sink lines, then a
-#     fourth as #145 on `print(f"- {i}")`.
+#     fourth as alert 145 on `print(f"- {i}")`.
 #
 # Keying the adjudication to the FLOW instead -- rule, sink function, source
 # function -- survives every edit that only moves lines, which is the whole
@@ -26,8 +28,11 @@
 #
 # ADDING AN ENTRY IS AN ASSERTION, not paperwork. It says: this flow was
 # traced, end to end, and the finding is not a defect. Cite the evidence in
-# `comment` -- that text is what lands on the alert and is all a future
-# session will have. A finding that IS a defect gets fixed; see the standing
+# `comment` -- the full argument, which stays in this file -- and state the
+# verdict in `headline`, which is the part that lands on the alert (GitHub's
+# 280-character cap is why the two are separate; see FIELDS below). What a
+# future session finds on the alert is the headline plus a pointer back here,
+# so this file is the record. A finding that IS a defect gets fixed; see the standing
 # rule at `src/nyxgpt/ops.py` `_log_nonzero_exit` -- kill the flow at its
 # source rather than trying to convince CodeQL's taint tracker that a
 # sanitizer exists, because inline `codeql[...]` / `lgtm[...]` suppression
@@ -77,7 +82,7 @@ adjudications:
       value never reaches JSON, logs, the API or the UI.
     comment: >-
       Intended disclosure on explicit request, not a leak -- same adjudication
-      as #119 and #143. The two flows are
+      as alerts 119 and 143. The two flows are
       `cloud_screen.py:944` (`_print_open_summary`) and `cloud_screen.py:983`
       (`_print_status_summary`), and BOTH are gated on `show_password`, which
       is set only by `nyxgpt cloud screen --show-password`. Without that flag
@@ -114,6 +119,6 @@ adjudications:
       returned. The `doctor()` sinks it reaches -- `print(f"- {i}")`,
       `logger.warning`'s message and its `extra` -- therefore carry paths and
       a username, which is what the finding was already dismissed for at
-      three earlier sink lines (#21, #22, #23). Held by the test in
+      three earlier sink lines (alerts 21, 22, 23). Held by the test in
       `enforced_by`, which asserts the real token contents never appear in any
       returned string.

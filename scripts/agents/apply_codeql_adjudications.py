@@ -21,9 +21,12 @@ Exit codes, which are the point of running it in CI:
 and a curious operator both want.
 
 Why not just re-dismiss by hand each time: it had been done by hand five times
-(#143->#144, and #21/#22/#23->#145) and the sixth was discovered by a release
-being blocked. The register makes the decision durable; this script makes it
-self-applying.
+(alert 143 -> 144, and alerts 21/22/23 -> 145) and the sixth was discovered by
+a release being blocked. The register makes the decision durable; this script
+makes it self-applying.
+
+(Alert numbers carry no `#`: in rendered markdown that is an issue link, and
+this repo's issues 21-146 are deleted. See `dismissal_comment`.)
 """
 
 from __future__ import annotations
@@ -48,8 +51,12 @@ EXIT_UNREADABLE = 2
 def _gh(args: list[str], *, accept: str | None = None) -> str:
     """One `gh api` read. Raises `RuntimeError` with gh's own text on failure.
 
-    Agent sessions cannot call the code-scanning API directly (CLAUDE.md), so
-    this runs where a token with `security-events` can: inside the workflow.
+    Reads work under any token holding `repo` or `security-events: read`,
+    including an agent session's (ledger **S-011** retires the belief that
+    they do not). What this script needs the workflow for is the *write*: the
+    dismissal `PATCH` wants `security-events: write`, which
+    `.github/workflows/codeql_adjudications.yml` grants the job, and running
+    there leaves a citable run log for the review to point at.
     """
     argv = ["gh", "api"] + args
     if accept:

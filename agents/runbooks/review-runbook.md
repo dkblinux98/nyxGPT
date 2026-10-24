@@ -479,12 +479,15 @@ class one construct wider — see §1e and ledger **V-027**/**V-032**.
   is the **D-080** defect, and it comes back at the next line shift.
 
 **Motivating incident for the flow count (#3837, acceptance failure).** PR
-#3899 was merged claiming alert #123 fixed. It had three flows: the developer
+#3899 was merged claiming alert 123 fixed. It had three flows: the developer
 traced the one reaching the `except` branch of `/ops/release-candidate`,
 redacted it, and shipped. The other two ran through the **success** path — the
 same caught exception reaching `pypi_lookup_error` and a `blockers[]` entry in
-the `200` response — so the rescan reopened #123 at a new sink line and the
-owner failed acceptance with three words: *"#123 is still open."* Nothing in
+the `200` response — so the rescan reopened alert 123 at a new sink line and
+the owner failed acceptance with three words: *"`#123` is still open."*
+(Alert numbers are written bare here, and the owner's quote is in a code span,
+for the reason **D-080** gives: `#123` in markdown links to *issue* 123, and
+this repo's issues 21-146 are deleted.) Nothing in
 the review caught it, because the gate as first written asked only whether the
 list had been read.
 

@@ -1895,7 +1895,8 @@ rather than mechanism, and nothing can enforce them.
   sink legitimately accepts, and is set per sink rather than once for the
   module.** `self_heal.py` inlines one guard
   (`re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", x)`) at nine sinks, because
-  CodeQL #4 recognizes that call form and not a constant or a helper. One of
+  CodeQL alert 4 recognizes that call form and not a constant or a helper.
+  One of
   those nine takes a *Homebrew formula* name, and Homebrew's versioned-formula
   syntax carries `@` — so the guard refused `nyxgpt-api@3.0.0rc`, which is
   what every candidate-channel install registers and what
@@ -3616,12 +3617,14 @@ them.
   here holds: the reviewer names the verdict, the owner performs it"~~, and its
   sibling ~~"agent sessions cannot call the code-scanning API directly"~~
   (`agents/runbooks/review-runbook.md` §1f steps 4 and 1; `CLAUDE.md`
-  § Tooling). Superseded 2026-10-24 by **D-080** and by measurement (#4222).
+  § Tooling; `scripts/agents/apply_codeql_adjudications.py` `_gh`;
+  `.github/workflows/code_scan_report.yml`'s header). Superseded 2026-10-24
+  by **D-080** and by measurement (#4222).
   Both halves are false. The agent PAT these workflows carry holds `repo`,
   which reaches `/code-scanning/alerts` **and** the
   `application/sarif+json` analysis read — exercised directly in run
   `40072136036` — and `scripts/agents/apply_codeql_adjudications.py` performed
-  the live dismissals of alerts #144/#145, which read back
+  the live dismissals of alerts 144/145, which read back
   `dismissed_by: myGPT-developer-agent`. The sanctioned path is no longer an
   owner-performed dismissal at all: the adjudication is an entry in
   `security/codeql-adjudications.yml` and
@@ -3630,4 +3633,8 @@ them.
   a verdict to the owner instead of requiring the register entry — a dismissal
   recorded only on the alert is the exact defect **D-080** retires. Dispatching
   `code_scan_report.yml` remains correct where the review must *cite* the list
-  it read; it was never the only way to read it.
+  it read; it was never the only way to read it. The first sweep of this
+  retirement corrected the runbook and `CLAUDE.md` and missed the two code
+  copies, so the sentences are now held retired by
+  `tests/unit/test_codeql_adjudications.py::test_no_file_still_asserts_the_retired_access_premise`
+  — the guard, not the prose, is what keeps them gone.

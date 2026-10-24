@@ -6,10 +6,15 @@ lived in one place only: GitHub's per-alert dismissal state. An alert's
 identity includes its sink's LINE NUMBER, so an edit that merely moves a
 dismissed sink re-raises the identical, already-accepted finding as a new open
 alert. Nothing noticed until `scripts/release_ceremony.sh`'s code-scanning gate
-refused to release -- which is how #143 (`cloud_deploy.py:3690`, dismissed
-`won't fix`) came back as #144 at `:3924` and blocked v3.0.1, and how one
-`ops doctor` flow was adjudicated four separate times (#21, #22, #23, #145) at
-four sink lines.
+refused to release -- which is how alert 143 (`cloud_deploy.py:3690`,
+dismissed `won't fix`) came back as alert 144 at `:3924` and blocked a release
+ceremony two weeks later, and how one `ops doctor` flow was adjudicated four
+separate times (alerts 21, 22, 23, 145) at four sink lines. #4222 has the
+dates and the line numbers.
+
+(Alert numbers appear throughout this module WITHOUT a `#`. See
+`dismissal_comment` for why: in rendered markdown `#143` is an issue link,
+and this repo's issues 21-146 are deleted.)
 
 THE RULE this module enforces:
 
@@ -43,9 +48,10 @@ reason: an unverified source is not an accepted one.
 WHAT COUNTS AS "THE SOURCE", because the obvious answer is wrong. The first
 threadFlow step's *enclosing function* is not the taint source -- it is
 whatever function the source expression happens to be written in. Measured on
-this repo's own alerts: #144's two flows start at `cloud_screen.py:944` and
-`:983`, which resolve to `_print_open_summary` and `_print_status_summary`,
-the two CALLERS; and #145's starts inside `doctor`, which is also its sink, so
+this repo's own alerts: alert 144's two flows start at `cloud_screen.py:944`
+and `:983`, which resolve to `_print_open_summary` and `_print_status_summary`,
+the two CALLERS; and alert 145's starts inside `doctor`, which is also its
+sink, so
 the key would carry no information at all. The step's `message.text` is what
 names the symbol -- `ControlFlowNode for read_vnc_password()`,
 `ControlFlowNode for _glitchtip_secrets_doctor_issues()` -- so that is the
@@ -87,7 +93,7 @@ MODULE_SCOPE = "<module>"
 #: GitHub's hard limit on `dismissed_comment`, learned by 422:
 #: "Only 280 characters are allowed; 1043 were supplied." It is also the
 #: explanation for the truncated dismissal comments already on this repo's
-#: alerts -- #119's stops mid-word at "The alert's threat model - an attacke"
+#: alerts -- alert 119's stops mid-word at "The alert's threat model - an attacke"
 #: -- and the second reason the reasoning belongs in the repository: 280
 #: characters cannot hold why a finding was accepted. So the alert gets
 #: `headline` plus a pointer, and `comment` -- the full argument -- stays in
@@ -397,11 +403,19 @@ def dismissal_comment(adjudication: Adjudication) -> str:
 
     `load_register` refuses an entry whose result exceeds
     `MAX_DISMISSAL_COMMENT`, so this never needs to truncate -- a silently
-    cut-off reason is how #119's dismissal ends mid-word.
+    cut-off reason is how alert 119's dismissal ends mid-word.
+
+    Alert numbers are written WITHOUT a leading `#`. GitHub renders this
+    string as markdown, where `#143` autolinks to *issue* 143 -- and this
+    repo's issues 21-146 are deleted, so every history entry would resolve to
+    an HTTP 410 about something unrelated. Alerts and issues share one `#N`
+    namespace in rendered text and nothing disambiguates them, so the only
+    safe form for an alert is the bare number. Same reason `agents/LEDGER.md`
+    D-080 says "alert 143".
     """
-    history = (
-        f" Raised as {', '.join('#' + str(n) for n in adjudication.raised_as)}."
-        if adjudication.raised_as
-        else ""
-    )
+    history = ""
+    if adjudication.raised_as:
+        noun = "alert" if len(adjudication.raised_as) == 1 else "alerts"
+        numbers = ", ".join(str(n) for n in adjudication.raised_as)
+        history = f" Raised as {noun} {numbers}."
     return f"{adjudication.headline} {REGISTER_POINTER}{history}"

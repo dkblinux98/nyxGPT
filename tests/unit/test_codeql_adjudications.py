@@ -5,7 +5,7 @@ The class this covers: an adjudication of a code-scanning finding used to live
 only in GitHub's per-alert state, keyed to the sink's LINE NUMBER. Moving a
 dismissed sink re-raised the identical accepted finding as a new open alert,
 and nothing reported it until the release ceremony's gate refused to release
-(#143 -> #144; #21/#22/#23 -> #145).
+(alert 143 -> 144; alerts 21/22/23 -> 145).
 
 So the load-bearing test here is
 `test_a_sink_that_moved_lines_still_matches`. The rest keep the register
@@ -16,6 +16,7 @@ and "could not resolve the sink" must not read as "accepted".
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -81,7 +82,7 @@ def test_every_entry_names_tests_that_exist() -> None:
 
 
 def test_the_two_v301_blockers_are_adjudicated() -> None:
-    """#144 and #145, the alerts that blocked v3.0.1, by their recorded history."""
+    """Alerts 144 and 145, which blocked v3.0.1, by their recorded history."""
     raised = {n for entry in adj.load_register() for n in entry.raised_as}
 
     assert {144, 145} <= raised
@@ -188,9 +189,9 @@ def _alert(number: int, line: int, severity: str = "high") -> dict:
 def test_a_sink_that_moved_lines_still_matches(tree: Path, register: list) -> None:
     """THE regression test for #4222.
 
-    #143 was dismissed at `cloud_deploy.py:3690`. `_print_row` moved to
-    `:3924` and the identical flow came back as #144, two weeks before the
-    v3.0.1 ceremony. Keyed to the function, both lines are the same finding --
+    Alert 143 was dismissed at `cloud_deploy.py:3690`. `_print_row` moved to
+    `:3924` and the identical flow came back as alert 144, two weeks before
+    the v3.0.1 ceremony. Keyed to the function, both lines are the same finding --
     and so is any future line the function lands on.
     """
     flows = {(RULE, "src/printer.py", line): {"read_vnc_password"} for line in (1, 2)}
@@ -438,11 +439,28 @@ def test_the_dismissal_comment_points_back_at_the_register(register: list) -> No
     comment = adj.dismissal_comment(register[0])
 
     assert "security/codeql-adjudications.yml" in comment
-    assert "#143" in comment
+    # Bare number, and singular for one: `#143` would link to a deleted issue.
+    assert "Raised as alert 143." in comment
     assert register[0].headline in comment
     # The full argument stays in the file: 280 characters cannot hold it, and
-    # trying is how #119's dismissal ends mid-word.
+    # trying is how alert 119's dismissal ends mid-word.
     assert register[0].comment not in comment
+
+
+def test_the_dismissal_comment_does_not_autolink_alert_numbers() -> None:
+    """GitHub renders `dismissed_comment` as markdown, where `#143` is a link
+    to ISSUE 143 -- and this repo's issues 21-146 are deleted, so the history
+    line would point every reader at an unrelated HTTP 410. Alerts and issues
+    share one `#N` namespace in rendered text, so the only safe form for an
+    alert is the bare number. The register's own pointer keeps its `#4222`:
+    that one IS an issue, and it resolves."""
+    for entry in adj.load_register():
+        comment = adj.dismissal_comment(entry)
+        history = comment.partition("Raised as")[2]
+
+        assert "#" not in history, f"{entry.key()}: alert number autolinks in {history!r}"
+        for number in entry.raised_as:
+            assert str(number) in history, f"{entry.key()}: alert {number} missing from history"
 
 
 def test_every_live_entry_fits_githubs_comment_limit() -> None:
@@ -459,3 +477,113 @@ def test_alert_severity_falls_back_to_the_rule_severity() -> None:
     assert adj.alert_severity({"rule": {"security_severity_level": "High"}}) == "high"
     assert adj.alert_severity({"rule": {"severity": "error"}}) == "error"
     assert adj.alert_severity({"rule": {}}) == ""
+
+
+# ---------------------------------------------------------------------------
+# 7. The retired access premise (ledger S-011)
+# ---------------------------------------------------------------------------
+
+#: The sentence ledger **S-011** retires, in the spellings it was written in.
+#: Measured false 2026-10-24 (#4222): the agent PAT these workflows carry
+#: holds `repo`, which reaches `/code-scanning/alerts` and the
+#: `application/sarif+json` analysis read directly.
+RETIRED_ACCESS_CLAIMS = (
+    "cannot call the code-scanning api",
+    "can not call the code-scanning api",
+    "cannot read the code-scanning api",
+    "cannot call the code scanning api",
+)
+
+#: Where the retirement is *recorded*, which necessarily quotes it. The ledger
+#: strikes the sentence through; this test names it to assert it is gone.
+RETIREMENT_RECORDS = (
+    Path("agents/LEDGER.md"),
+    Path("tests/unit/test_codeql_adjudications.py"),
+)
+
+#: Directories with no prose of this project's own to falsify.
+SKIPPED_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "coverage",
+    ".venv",
+    # Deliberately historical: a document whose purpose is to record what was
+    # believed then cannot be falsified by a later measurement (CLAUDE.md,
+    # owner reorganization 2026-07-31).
+    "archived_product_docs",
+}
+
+SWEPT_SUFFIXES = {".md", ".py", ".yml", ".yaml", ".sh", ".ts", ".tsx"}
+
+
+def _swept_files() -> list[Path]:
+    out = []
+    for path in REPO_ROOT.rglob("*"):
+        if not path.is_file() or path.suffix not in SWEPT_SUFFIXES:
+            continue
+        if SKIPPED_DIRS & set(path.relative_to(REPO_ROOT).parts):
+            continue
+        out.append(path)
+    return out
+
+
+def test_no_file_still_asserts_the_retired_access_premise() -> None:
+    """Ledger **S-011** retired "agent sessions cannot call the code-scanning
+    API directly" and said do not restore it. Prose alone could not hold that:
+    the first sweep corrected `review-runbook.md` §1f and `CLAUDE.md` and left
+    the sentence standing in `apply_codeql_adjudications.py`'s `_gh` docstring
+    -- inside the same PR that shipped S-011, citing CLAUDE.md for a claim
+    CLAUDE.md had just stopped making -- and in `code_scan_report.yml`'s
+    header. A retired premise is only retired where a guard says so, which is
+    this one (CLAUDE.md: the fact goes in the guard that enforces it).
+
+    `code_scan_report.yml` stays, and so does every instruction to dispatch
+    it: the run URL is citable evidence a session's own read is not. What may
+    not be said again is that the direct read does not work.
+    """
+    offenders = []
+    for path in _swept_files():
+        rel = path.relative_to(REPO_ROOT)
+        if rel in RETIREMENT_RECORDS:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore").lower()
+        for claim in RETIRED_ACCESS_CLAIMS:
+            if claim in text:
+                offenders.append(f"{rel}: {claim!r}")
+
+    assert (
+        not offenders
+    ), "ledger S-011 retired this sentence; it is still asserted in:\n" + "\n".join(offenders)
+
+
+def test_markdown_does_not_write_alert_numbers_as_issue_links() -> None:
+    """The **D-080** rendering rule, swept over every markdown file rather
+    than the one entry it was noticed in. `#143` in markdown links to ISSUE
+    143; this repo's issues 21-146 are deleted, so an alert written that way
+    sends the reader to an unrelated HTTP 410. The quotation in
+    `review-runbook.md` keeps the owner's exact words by putting them in a
+    code span, which renders the characters and suppresses the link.
+
+    Scoped to rendered surfaces on purpose. The same `#N` inside a workflow's
+    YAML comment is displayed as source and links to nothing, so sweeping
+    those would be the scope inflation `review-runbook.md` §1e warns against.
+    """
+    pattern = re.compile(r"(?:[Aa]lerts?|CodeQL) #\d{1,3}\b")
+    offenders = []
+    for path in _swept_files():
+        if path.suffix != ".md":
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}")
+
+    assert not offenders, "write alert numbers bare (`alert 143`), not as `#143`:\n" + "\n".join(
+        offenders
+    )
