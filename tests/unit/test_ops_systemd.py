@@ -772,12 +772,45 @@ def _fake_npm(returncode=0, *, stderr="", write_receipt=True):
     return _run
 
 
-def test_install_native_web_systemd_missing_npm(monkeypatch):
-    monkeypatch.setattr(ops, "_which", lambda _: None)
+def test_install_native_web_systemd_refuses_without_the_declared_node(monkeypatch):
+    """The gate is the declared Node now, not `_which("npm")` (#4194).
+
+    The build this step stages is served for the life of the install, so a
+    wrong major here is not a warning -- it IS the artifact. Both arms of the
+    gate are asserted: absent, and present-but-wrong.
+    """
+    node_runtime = ops.node_runtime
+
+    def _report(state, version, major):
+        return node_runtime.NodeRuntimeReport(
+            state=state,
+            path="/opt/homebrew/bin/node" if version else "",
+            version=version,
+            major=major,
+            declared_major=node_runtime.NODE_MAJOR,
+            detail="stubbed",
+            remediation=node_runtime.NODE_REMEDIATION_COMMAND,
+        )
+
+    monkeypatch.setattr(
+        node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(node_runtime.NODE_MISSING, "", None),
+    )
     results = ops._install_native_web_systemd()
     assert len(results) == 1
     assert results[0].ok is False
-    assert "npm not found" in results[0].message
+    assert "Node.js not found" in results[0].message
+
+    monkeypatch.setattr(
+        node_runtime,
+        "node_version_report",
+        lambda *, timeout=15.0: _report(node_runtime.NODE_MISMATCH, "v26.11.0", 26),
+    )
+    results = ops._install_native_web_systemd()
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "Wrong Node.js version" in results[0].message
 
 
 def test_install_native_web_systemd_happy_path(monkeypatch, tmp_path):

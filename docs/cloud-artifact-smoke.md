@@ -24,7 +24,8 @@ masked the ones behind it, because the bootstrap aborts at its first failure,
 so they were discovered one EC2 round-trip at a time.
 
 `linux-native-smoke.yml` could not see any of them, and could never have: it
-runs on ubuntu-latest with Python 3.11 and Node 20 installed by setup actions,
+runs on ubuntu-latest with Python 3.11 and the declared Node (`.nvmrc`)
+installed by setup actions,
 and installs nyxGPT *editable from the checkout*. That is a machine groomed to
 never hit those failures — the "green by luck" condition D-006 exists to
 prevent (the same shape the macOS smoke had before #3753).
@@ -99,7 +100,7 @@ verdict** — the run passes only if the smoke fails:
 | Fault | Reintroduces | Must fail as |
 | --- | --- | --- |
 | `old-python` | #3782 — rewrites every versioned interpreter reference back to the system `python3`, so the CLI venv is built on a Python the wheel's `requires-python` refuses | `interpreter-selection` |
-| `no-node` | #3761 — drops the Node 20 provisioning, so `ops install` reaches the web build with no `npm` | `node-provisioning` |
+| `no-node` | #3761 — drops the Node provisioning, so `ops install` reaches the web build with no `npm` | `node-provisioning` |
 | `file-sessions` | #3865 — drops the session-backend selection, so the instance keeps `example.config.ini`'s back-compat `session_backend = file` and writes chats to its own disk instead of the shared Cassandra | `session-backend` |
 
 ```bash
@@ -138,7 +139,7 @@ classes bit without a second EC2 round-trip (#3762).
 | Class | Says |
 | --- | --- |
 | `interpreter-selection` | The venv was built on a Python too old for the artifact (#3782) |
-| `node-provisioning` | The web build ran without a usable Node 20 (#3761) |
+| `node-provisioning` | The web build ran without a usable Node (#3761) |
 | `docker-handling` | The engine was missing, not running, or unreachable by the target user (#3760) |
 | `artifact-obtain` | A service tarball could not be fetched from its GitHub Release — usually an unpublished version, i.e. a `--version` run against a release that was never cut |
 | `artifact-relative-path` | Something resolved a runtime path against a repository that is not on the machine (#3759) |

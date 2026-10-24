@@ -1,4 +1,8 @@
-FROM node:20-alpine AS deps
+# The Node major in every `FROM` below is NOT a free choice (#4194): it is the
+# one nyxGPT declares in `.nvmrc` / `src/nyxgpt/node_runtime.py`, and
+# `tests/unit/test_node_version_declaration.py` fails the build if this file
+# names a different one. Bump the declaration, not this line.
+FROM node:24-alpine AS deps
 WORKDIR /app
 # --- nyxGPT remote-fetch policy (#4205). Generated from
 # src/nyxgpt/build_fetch_policy.py, which states the reasoning;
@@ -11,7 +15,10 @@ ENV NPM_CONFIG_FETCH_TIMEOUT=300000
 ENV PIP_RETRIES=5
 ENV PIP_TIMEOUT=30
 # --- end nyxGPT remote-fetch policy
-COPY package.json package-lock.json ./
+# `.npmrc` with the manifests, not left behind: it carries `engine-strict`, so
+# without it the one `npm ci` that builds the shipped bundle is the one install
+# that would downgrade an `engines` mismatch back to a warning (#4194).
+COPY package.json package-lock.json .npmrc ./
 # `npm ci` is not trustworthy on its own here: with the registry unreachable it
 # prints "npm error Exit handler never called!" and **exits 0**, having created
 # 520 empty package directories and no `node_modules/.package-lock.json`. That
@@ -20,7 +27,7 @@ COPY package.json package-lock.json ./
 # npm's own completed-reify receipt; see build_fetch_policy.npm_install_run_step.
 RUN npm ci; status=$?; if [ $status -ne 0 ] || ! test -s node_modules/.package-lock.json; then echo "nyxgpt-build: remote fetch did not complete: 'npm ci' left an incomplete node_modules (exit $status) -- the package registry was most likely unreachable" >&2; exit 1; fi
 
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 # --- nyxGPT remote-fetch policy (#4205). Generated from
 # src/nyxgpt/build_fetch_policy.py, which states the reasoning;
@@ -61,7 +68,7 @@ ENV NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN=${NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DS
 # through its exit status, so the step already goes red (#4205).
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 # Which web build this image is (#3982). Server-side only, so unlike the

@@ -1,6 +1,9 @@
 {
   "name": "nyxgpt",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "devDependencies": {
     "@modelcontextprotocol/server-github": "^2025.4.8",
     "@upstash/context7-mcp": "^3.2.4"

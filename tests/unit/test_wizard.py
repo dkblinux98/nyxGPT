@@ -19,6 +19,23 @@ from nyxgpt.wizard import (
 
 pytestmark = pytest.mark.unit
 
+# Captured at import, ahead of `tests/conftest.py`'s suite-wide stub (#4194).
+_REAL_RESOLVE_NODE = wizard_module.node_runtime.resolve_node_bin
+_REAL_RESOLVE_NPM = wizard_module.node_runtime.resolve_npm_bin
+
+
+def _restore_real_node_resolution(monkeypatch, wizard_mod) -> None:
+    """Put the real `node`/`npm` resolvers back, and clear the ambient env.
+
+    The suite stubs them so that no test depends on which Node the runner has;
+    the two tests below are about what the wizard WRITES for a given host, so
+    they need the real resolution with a controlled `which`.
+    """
+    monkeypatch.setattr(wizard_mod.node_runtime, "resolve_node_bin", _REAL_RESOLVE_NODE)
+    monkeypatch.setattr(wizard_mod.node_runtime, "resolve_npm_bin", _REAL_RESOLVE_NPM)
+    monkeypatch.delenv(wizard_mod.node_runtime.NODE_BIN_ENV_VAR, raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
+
 
 def test_validate_ollama_connection_success():
     """Test successful Ollama connection validation."""
@@ -225,7 +242,11 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
     import nyxgpt.wizard as wizard_mod
 
-    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: f"/fake/bin/{prog}")
+    # Patched through `node_runtime`, which owns the resolution since #4194 --
+    # the wizard no longer calls `shutil.which` itself.
+    _restore_real_node_resolution(monkeypatch, wizard_mod)
+    monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: f"/fake/bin/{prog}")
+    monkeypatch.setattr(wizard_mod.node_runtime.platform, "system", lambda: "Linux")
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
@@ -247,11 +268,18 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
 
 def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, monkeypatch):
-    """When node/npm aren't on PATH, fall back to the standard Homebrew
-    locations rather than writing empty values."""
+    """When node/npm aren't on PATH, fall back to where the DECLARED keg lands.
+
+    The fallback used to be `/opt/homebrew/bin/node` -- the *unversioned*
+    Homebrew keg, i.e. whatever major `brew upgrade node` had last moved to,
+    written into the user's config as a fact (#4194). It is now the versioned
+    `node@NN` keg nyxGPT declares, so a config generated on a host with no Node
+    points at the Node the install is about to put there.
+    """
     import nyxgpt.wizard as wizard_mod
 
-    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: None)
+    _restore_real_node_resolution(monkeypatch, wizard_mod)
+    monkeypatch.setattr(wizard_mod.node_runtime.shutil, "which", lambda prog: None)
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
@@ -263,8 +291,9 @@ def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, 
 
     parser = ConfigParser()
     parser.read(output_path)
-    assert parser.get("paths", "node_bin") == "/opt/homebrew/bin/node"
-    assert parser.get("paths", "npm_bin") == "/opt/homebrew/bin/npm"
+    keg = f"/opt/homebrew/opt/{wizard_mod.node_runtime.HOMEBREW_NODE_FORMULA}/bin"
+    assert parser.get("paths", "node_bin") == f"{keg}/node"
+    assert parser.get("paths", "npm_bin") == f"{keg}/npm"
 
 
 def test_generate_config_ini_generates_secrets(tmp_path: Path):

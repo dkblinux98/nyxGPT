@@ -16,7 +16,19 @@ class NyxgptWeb < Formula
   url "__NYXGPT_WEB_URL__"
   sha256 "__NYXGPT_WEB_SHA256__"
   version "__VERSION__"
-  depends_on "node"
+  # The VERSIONED keg, not the unversioned `node` (#4194). `depends_on "node"`
+  # is satisfied by whatever major homebrew-core has moved to -- 26.11 on the
+  # owner's machine while CI, the container and the Linux installs were all on
+  # 20 -- so the one platform with no declaration was the one the owner runs,
+  # and `brew upgrade node` moved it silently. `node@NN` is keg-only, which is
+  # the property being relied on below: this keg's `node` is reachable at
+  # `opt_bin` and is NOT what `node` on `PATH` resolves to.
+  #
+  # The major is nyxGPT's one Node declaration -- `.nvmrc` /
+  # `node_runtime.NODE_MAJOR` -- and
+  # `tests/unit/test_node_version_declaration.py` fails the build if this
+  # formula names a different one.
+  depends_on "node@24"
 
   def install
     # nyxGPT's one remote-fetch policy (#4205). Set here rather than inherited
@@ -115,8 +127,12 @@ class NyxgptWeb < Formula
       # Ensure Homebrew bins are available so node/npm can be found.
       export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-      # Prefer the Node installed by Homebrew.
-      export PATH="#{Formula["node"].opt_bin}:#{Formula["node"].opt_libexec}/bin:${PATH}"
+      # The DECLARED Node, ahead of everything (#4194). Two things are load
+      # bearing here: it is the `node@24` keg rather than the unversioned
+      # `node`, so `brew upgrade node` cannot change what this service runs;
+      # and it is prepended AFTER the line above, so it wins over
+      # /opt/homebrew/bin where the unversioned one lives.
+      export PATH="#{Formula["node@24"].opt_bin}:#{Formula["node@24"].opt_libexec}/bin:${PATH}"
 
       CONFIG_FILE="$HOME/.nyxGPT/config.ini"
       SYS_PY="/usr/bin/python3"
@@ -145,6 +161,11 @@ class NyxgptWeb < Formula
       echo "nyxgpt-web starting (self-contained Cellar build)" >&2
       echo "  host: $HOST" >&2
       echo "  port: $PORT" >&2
+      # Which Node this service actually resolved, in its own log (#4194).
+      # Observability, per the Definition of Done: the question "what is it
+      # running" was previously answerable only by guessing from PATH, and the
+      # answer on macOS was "whatever brew last upgraded to".
+      echo "  node: $(command -v node) $(node -v 2>/dev/null || echo unknown)" >&2
 
       cd "#{libexec}"
       exec npm run start
@@ -244,6 +265,15 @@ class NyxgptWeb < Formula
   test do
     assert_predicate bin/"nyxgpt-web", :exist?
     assert_predicate libexec/".next", :exist?
+
+    # The keg runs the DECLARED Node, not whatever `node` is on PATH (#4194).
+    # Asserted in the formula because this is the only place the question can
+    # be asked of the installed keg itself: `brew test` runs with the user's
+    # PATH, so reading `node -v` here would answer about their shell. The
+    # dependency's own `opt_bin` is what the wrapper prepends, so it is what
+    # has to be major 24.
+    node_version = shell_output("#{Formula["node@24"].opt_bin}/node -v").strip
+    assert_match(/^v24\./, node_version)
 
     # File existence is also true of a keg that crash-loops the moment launchd
     # starts it, and this formula has shipped exactly that: `npm prune

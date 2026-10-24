@@ -11,8 +11,8 @@ Why it exists: the rc9 cloud round found five serial defects in the EC2
 install path (#3759 artifact-relative paths, #3760 docker, #3761 npm, #3762
 subprocess output, #3782 the 3.9 venv), each one masking the next because the
 bootstrap aborts at its first failure. `linux-native-smoke.yml` structurally
-cannot see any of them: it runs on ubuntu-latest with Python 3.11 and Node 20
-already installed by setup actions, and installs nyxGPT *editable from the
+cannot see any of them: it runs on ubuntu-latest with Python 3.11 and the
+declared Node already installed by setup actions, and installs nyxGPT *editable from the
 checkout*. That is the D-006 "green by luck" condition -- a machine groomed to
 never hit the failures the smoke is supposed to catch.
 
@@ -58,7 +58,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nyxgpt import cloud_provision, release_tarball
+from nyxgpt import cloud_provision, node_runtime, release_tarball
 from nyxgpt.cloud import NYXGPT_HOME, CloudCommandError
 from nyxgpt.doc_links import doc_url
 from nyxgpt.subprocess_bounds import timeout_result
@@ -95,7 +95,7 @@ BOOTSTRAP_PATH = f"{STAGING_DIR}/nyxgpt-bootstrap.sh"
 ARTIFACT_DIR = f"{STAGING_DIR}/artifacts"
 
 # Default budgets, in seconds. The bootstrap is the long pole by an order of
-# magnitude: dnf, a Node 20 install, an Ollama download, `npm ci` + a Next.js
+# magnitude: dnf, a Node install, an Ollama download, `npm ci` + a Next.js
 # build, and a Cassandra container all happen inside it.
 DEFAULT_BOOTSTRAP_TIMEOUT = 2400.0
 DEFAULT_BUILD_TIMEOUT = 900.0
@@ -183,7 +183,7 @@ FAULTS: dict[str, Fault] = {
     ),
     "no-node": Fault(
         description=(
-            "Drop the Node 20 provisioning, reintroducing the #3761 class: "
+            "Drop the Node provisioning, reintroducing the #3761 class: "
             "`ops install` reaches the web build with no `npm` on the machine."
         ),
         expects="node-provisioning",
@@ -572,9 +572,18 @@ _FAILURE_SIGNATURES: tuple[tuple[str, str, str], ...] = (
         "artifact (the #3782 class -- the AMI's system python3 is 3.9)",
     ),
     (
+        # The last two alternatives are `verify_declared_node`'s own wording
+        # (#4194), and they have to be here: the `no-node` fault now surfaces
+        # at that check rather than later as a missing `npm`, so without them
+        # the injection would land as "an unclassified failure" and the
+        # fault-injection verdict would read "the smoke cannot see that defect
+        # class" about a smoke that had just seen it. A classifier arm added
+        # for one spelling of a class and not the others is #4179's defect.
         "node-provisioning",
-        r"npm: command not found|node: command not found|npm ci|Node\.js version",
-        "node provisioning: the web build ran without a usable Node 20 (the #3761 class)",
+        r"npm: command not found|node: command not found|npm ci|Node\.js version|"
+        r"not the Node \d+ nyxGPT declares|left this machine on Node",
+        "node provisioning: the web build ran without a usable Node, or the host ended "
+        "up on a Node major nyxGPT does not declare (the #3761/#4194 class)",
     ),
     (
         "docker-handling",
@@ -722,6 +731,35 @@ def verify_repo_less() -> dict[str, Any]:
     if stray:
         raise ArtifactSmokeFailure(f"A repository checkout is present in the container: {stray}")
     return {"module_path": module_path, "checkout_present": False}
+
+
+def verify_declared_node() -> dict[str, Any]:
+    """The bootstrap provisioned the DECLARED Node major, on a bare machine.
+
+    `preflight()` asserts `node` is *absent* before the bootstrap runs -- that
+    is a statement about the image, not about nyxGPT. This is the other half,
+    and the half #4194 is about: the existence check this file used to make
+    ("node is absent beforehand", "the web build did not fail for want of npm")
+    is satisfied by every wrong major as well as every right one, so an
+    instance provisioned with Node 20 by a bootstrap that said `setup_20.x`
+    passed it while serving a bundle built and tested on nothing of the kind.
+
+    Asked of the machine, not of the rendered script: that the template
+    *interpolates* the declaration is a unit-test claim
+    (`tests/unit/test_node_version_declaration.py`); what no unit test can see
+    is which Node a NodeSource install actually put on an AL2023 box.
+    """
+    declared = node_runtime.NODE_MAJOR
+    version = _exec_as_target("node -v 2>/dev/null || true", timeout=60.0).strip()
+    major = node_runtime.parse_node_major(version)
+    if major != declared:
+        raise ArtifactSmokeFailure(
+            f"the bootstrap left this machine on Node {version or 'none'}, not the "
+            f"Node {declared} nyxGPT declares -- the web bundle is built and tested "
+            f"on {declared}, so another major is untested, not merely newer "
+            f"(run: {node_runtime.NODE_REMEDIATION_COMMAND} on the instance)"
+        )
+    return {"node_version": version, "declared_major": declared}
 
 
 def verify_services(timeout: float) -> dict[str, Any]:
@@ -1076,6 +1114,9 @@ def run_container_smoke(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
         steps.append({"step": "repo-less", **verify_repo_less()})
+        # Before the service checks: a web tier serving 200s off the wrong Node
+        # major is the state #4194 exists to stop, and it would pass them.
+        steps.append({"step": "declared-node", **verify_declared_node()})
         steps.append({"step": "services", **verify_services(health_timeout)})
         # After services: this one drives the running API, so it needs the
         # stack the step above just proved is answering (#3865).

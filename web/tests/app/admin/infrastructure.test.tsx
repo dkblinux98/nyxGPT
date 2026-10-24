@@ -1128,6 +1128,133 @@ describe('InfrastructurePage', () => {
     ).not.toBeInTheDocument();
   });
 
+  // --- which NODE the web tier runs (#4194) ---
+  //
+  // nyxGPT never declared a Node version, so every surface picked its own:
+  // CI and the container on 20, the Linux installs on 20, and macOS on
+  // whatever Homebrew's unversioned `node` was that week -- 26.11 on the
+  // owner's machine. Nothing reported it, because every check in the tree
+  // asked whether a `node` existed, which a wrong major satisfies. The card
+  // has to show the version, not the existence.
+
+  const nativeWithNode = (node: unknown) => ({
+    ...mockStatusEmpty,
+    mode: 'native',
+    native: { api: 'started', web: 'started' },
+    install_mode: {
+      mode: 'artifact',
+      checkout: null,
+      label: 'artifact (published/vendored build -- the repo-less default)',
+      components: ['api', 'web'],
+      node,
+    },
+  });
+
+  it('shows the Node version and path even when it is correct (#4194)', async () => {
+    // Rendered on the happy path deliberately: if the row appeared only on a
+    // mismatch, "Node is fine" would again be something read off an absence.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithNode({
+            state: 'ok',
+            ok: true,
+            path: '/opt/homebrew/opt/node@24/bin/node',
+            version: 'v24.21.0',
+            major: 24,
+            declared_major: 24,
+            detail: 'Node v24.21.0 at /opt/homebrew/opt/node@24/bin/node',
+            remediation: '',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Node\.js \(web tier\)/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/v24\.21\.0/)).toBeInTheDocument();
+    // The PATH is the answer on macOS: the versioned keg and the unversioned
+    // /opt/homebrew/bin/node differ in nothing a bare version string shows.
+    expect(screen.getByText('/opt/homebrew/opt/node@24/bin/node')).toBeInTheDocument();
+  });
+
+  it('flags a wrong Node major and names the nyxgpt command that fixes it (#4194)', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithNode({
+            state: 'mismatch',
+            ok: false,
+            path: '/opt/homebrew/bin/node',
+            version: 'v26.11.0',
+            major: 26,
+            declared_major: 24,
+            detail:
+              'Node v26.11.0 at /opt/homebrew/bin/node is not the Node 24 nyxGPT declares',
+            remediation: 'nyxgpt ops node',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/is not the Node 24 nyxGPT declares/)
+      ).toBeInTheDocument();
+    });
+    // Observed, with a wrapped command as text -- never a button that would
+    // drive the substrate this page is served from (Definition of Done).
+    expect(screen.getByText('nyxgpt ops node')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /node/i })).not.toBeInTheDocument();
+  });
+
+  it('says nothing about Node where the question has no answer (#4194)', async () => {
+    // Inside a Pod the web tier is a separate image; the api container's own
+    // `node` would be an answer about the wrong machine.
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json(
+          nativeWithNode({
+            state: 'not_applicable',
+            ok: true,
+            path: '',
+            version: '',
+            major: null,
+            declared_major: 24,
+            detail: 'Not in scope from here: this API is running inside a Kubernetes Pod.',
+            remediation: '',
+          })
+        )
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Node\.js \(web tier\)/)).not.toBeInTheDocument();
+  });
+
+  it('renders against an api that omits the node report entirely (#4194)', async () => {
+    // Mid-upgrade the web tier restarts first and talks to an older api.
+    server.use(
+      http.get('/api/v1/infra/status', () => HttpResponse.json(nativeWithNode(undefined)))
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('ARTIFACT INSTALL')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Node\.js \(web tier\)/)).not.toBeInTheDocument();
+  });
+
   // --- WHICH build, not merely which mode (#3861) ---
   //
   // A mode cannot tell a 2.1.0 keg from a 3.0.0rc12 one -- both are

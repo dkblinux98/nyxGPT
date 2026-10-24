@@ -20,7 +20,7 @@ import CloudArtifactSmokePage from '../../../src/app/admin/cloud-smoke/page';
 const faults = [
   {
     fault: 'no-node',
-    description: 'Drop the Node 20 provisioning (#3761)',
+    description: 'Drop the Node provisioning (#3761)',
     expects: 'node-provisioning',
   },
   {
@@ -69,7 +69,7 @@ const failedResult = {
   ...passedResult,
   passed: false,
   failure: 'The EC2 bootstrap failed inside the container (exit 1)',
-  failure_class: 'node provisioning: the web build ran without a usable Node 20 (the #3761 class)',
+  failure_class: 'node provisioning: the web build ran without a usable Node (the #3761 class)',
   detail: 'The EC2 bootstrap failed inside the container (exit 1)',
   diagnostics: {
     ops_status: 'nyxgpt-web  failed',

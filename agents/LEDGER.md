@@ -3231,6 +3231,37 @@ rather than mechanism, and nothing can enforce them.
   own sink.
   Source: #4222; related #4164, #4192; extends **D-066**, **D-067**.
 
+- **D-081** · 2026-10-24 · developer (#4194) — **nyxGPT declares exactly one
+  Node.js major, and every place that installs, tests or runs Node derives it
+  from that declaration.** The declaration is `.nvmrc` plus
+  `src/nyxgpt/node_runtime.py` (`NODE_MAJOR`) — two spellings of one value,
+  because the Python side has to answer on an *artifact* install where there is
+  no checkout to read. The chosen line is **24** (Active LTS; 20 reached
+  end-of-life in April 2026, 22 is in maintenance), written as the range
+  `24.x` and never `>=24`: `>=` is precisely what let `brew upgrade node` walk
+  the macOS install onto 26 with nothing to say so. Before this, seven CI
+  steps and `web/Dockerfile` said 20, the retro-dashboard smoke said 22, the
+  Linux/EC2 bootstraps each carried their own `setup_20.x`, and macOS — the
+  platform with no pin at all — ran whatever Homebrew's unversioned `node` was
+  that week, so CI structurally could not break on the Node users run and the
+  Node it did test was out of support. Two consequences worth not re-deriving:
+  `node@NN` is **keg-only**, and that is the property being relied on (the
+  declared Node is reachable by path and not by name, so a `brew upgrade` of
+  the unversioned formula cannot move it); and `engines` without
+  `engine-strict=true` is scrollback rather than a gate, which is why `web/`
+  carries its own `.npmrc` — it ships as a standalone tarball the keg
+  `npm ci`s with no repo above it. **`ops install` reconciles the runtime, it
+  does not merely refuse it**: four install steps gate on the declared Node,
+  so a gate with no provisioning step would make the repo-less install path
+  (`pip install nyxgpt`, then `nyxgpt ops install`, no checkout) stop with four
+  failures and a command to type — the same reasoning that put the Docker
+  engine step there (#3632). `nyxgpt ops node` and that step share one
+  reconciler, per **D-066**.
+  Source: #4194; `tests/unit/test_node_version_declaration.py` (the guard that
+  names every surface when the line moves); `docs/ops.md` §The declared
+  Node.js version; related #4216 (the `.nvmrc` bootstrap that unblocked it),
+  #4192, #3761.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and

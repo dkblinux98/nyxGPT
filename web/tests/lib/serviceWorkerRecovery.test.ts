@@ -85,9 +85,12 @@ describe('hasControllingServiceWorker', () => {
   });
 
   // ChunkErrorBoundary calls this from getDerivedStateFromError, which also
-  // runs during server rendering, and Node has no global `navigator` before
-  // v21 (CI runs Node 20). Throwing there would replace the error the boundary
-  // was handed with a ReferenceError from the reporting code itself.
+  // runs during server rendering, and Node had no global `navigator` before
+  // v21. The declared Node is past that (#4194), so this is no longer a
+  // statement about CI's runtime -- it is about any server runtime without the
+  // global, which this test constructs below. Throwing there would replace the
+  // error the boundary was handed with a ReferenceError from the reporting
+  // code itself.
   it('is false, not a ReferenceError, where there is no navigator at all', () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
     // @ts-expect-error - simulating a server runtime with no navigator global
