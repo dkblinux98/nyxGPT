@@ -31,11 +31,16 @@ on:
         type: boolean
         required: false
         default: false
-  pull_request:
-    paths:
-      - 'security/codeql-adjudications.yml'
-      - 'scripts/agents/apply_codeql_adjudications.py'
-      - 'scripts/agents/lib/codeql_adjudications.py'
+# NOT on pull_request, deliberately. The first cut ran a dry-run on PRs that
+# touched the register, and `test_required_checks.py` was right to refuse it:
+# this job's verdict depends on which alerts are open on the RELEASE BRANCH, so
+# it would go red on a PR for a finding that PR never touched -- #4192's own
+# class, a required gate whose colour is not evidence about the commit. The
+# register's correctness on a PR is already covered where it belongs, by
+# `tests/unit/test_codeql_adjudications.py` under `ci-tests`: it parses, every
+# entry names a sink function, source functions and `enforced_by` tests that
+# exist in the tree, and every entry fits GitHub's comment limit -- all without
+# reading GitHub at all.
 
 permissions:
   security-events: write
@@ -60,22 +65,17 @@ jobs:
       - name: Install the register parser's one dependency
         run: python -m pip install --quiet pyyaml
 
-      # On a pull_request the register itself is what changed, so the run is a
-      # read-only check of it against whatever is open: a PR must not be able
-      # to dismiss a live alert, and `GITHUB_TOKEN` on a fork PR could not
-      # anyway. The real application runs on the alert event.
       - name: Apply the adjudication register
         env:
           # Through `env:` and read as data, never interpolated into the shell
           # body -- `scripts/agents/lib/workflow_script_guard.py` fails the
           # build on the latter (#3820, #3837).
-          EVENT_NAME: ${{ github.event_name }}
           DRY_RUN: ${{ inputs.dry_run }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           DRY=""
-          if [ "$EVENT_NAME" = "pull_request" ] || [ "$DRY_RUN" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
             DRY="--dry-run"
           fi
           python scripts/agents/apply_codeql_adjudications.py \

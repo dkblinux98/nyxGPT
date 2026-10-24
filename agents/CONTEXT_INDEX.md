@@ -40,7 +40,7 @@ fails if it drifts. Do not hand-edit.
 | `cloud-status-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Status Smoke |
 | `cloud-target-os-smoke.yml` | pull_request, push, workflow_dispatch | Cloud Target OS Smoke |
 | `code_scan_report.yml` | workflow_dispatch | Code Scan Report |
-| `codeql_adjudications.yml` | code_scanning_alert, workflow_dispatch, pull_request | CodeQL Adjudications |
+| `codeql_adjudications.yml` | code_scanning_alert, workflow_dispatch | CodeQL Adjudications |
 | `comment-token-gate-smoke.yml` | push, pull_request, workflow_dispatch | Comment Token Gate Smoke |
 | `compose-model-prepull-smoke.yml` | pull_request, push, workflow_dispatch | Compose Model Pre-pull Smoke |
 | `config-sync-smoke.yml` | push, workflow_dispatch | Config Sync Smoke |
