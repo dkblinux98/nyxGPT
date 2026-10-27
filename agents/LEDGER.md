@@ -3261,6 +3261,21 @@ rather than mechanism, and nothing can enforce them.
   names every surface when the line moves); `docs/ops.md` §The declared
   Node.js version; related #4216 (the `.nvmrc` bootstrap that unblocked it),
   #4192, #3761.
+- **D-082** · 2026-10-27 · owner (#4194) — **A transient network failure is
+  retried and diagnosed by a person, not guarded by a fault-injection test.**
+  The executed-verification gate (D-006) does not extend to "the network was
+  down": a human doing the RCA on a build that failed on a fetch sees the
+  network was the cause and runs it again, and if it keeps failing, checks
+  whether the outage is theirs or upstream. A test for that condition is built
+  only when it recurs often enough to cost more than the test does. Retired
+  under this rule: `image-build-fetch-policy-smoke` (#4205), a required job that
+  rebuilt the web image with the network off and waited for npm to give up.
+  Its result depended on how a given npm version fails (npm 10 crashes within
+  minutes, npm 11 retries every package as the fetch policy tells it to), not
+  on anything nyxGPT does. On Node 24 it ran into the job's 30-minute limit on
+  every run and blocked #4194. The `web/Dockerfile` completion check and fetch
+  policy from #4205 stay; only the test is gone.
+  Source: owner, 2026-10-27, on #4196; #4205.
 
 ## Parked
 
