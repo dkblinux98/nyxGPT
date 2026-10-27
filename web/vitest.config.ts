@@ -8,6 +8,20 @@ export default defineConfig({
     globals: true,
     environment: 'happy-dom',
     setupFiles: ['./tests/setup.ts'],
+    // Stated rather than inherited (#4238). vitest 5 flipped this default
+    // from false to true, which emptied every spy's call history before each
+    // test -- and `code-splitting.test.tsx`, whose subject is recorded once
+    // in `beforeAll`, did not merely fail: one of its assertions was a
+    // `forEach` over the calls, so it PASSED over an empty array. A default
+    // that can change a suite from "asserting something" to "asserting
+    // nothing" is not a default worth inheriting silently. Both settings are
+    // defensible; what this file must not do is leave the suite's answer to
+    // whoever bumps vitest next.
+    //
+    // `true` is the right value: a test that needs state from outside its
+    // own body should capture it (see that file's `beforeAll`), not rely on
+    // the previous test's leftovers.
+    clearMocks: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
