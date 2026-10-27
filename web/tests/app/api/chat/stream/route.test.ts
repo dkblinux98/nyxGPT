@@ -1,14 +1,15 @@
 /**
  * Tests for the /api/chat/stream Next.js proxy route.
  *
- * #3440: this route used to drive its upstream call through Next's built-in
- * `fetch` with a `dispatcher` built from the `undici` package pinned in
- * package.json. Next 16 bundles its own (newer-major) undici for global
- * fetch, so that dispatcher was rejected with `UND_ERR_INVALID_ARG` before
- * any network I/O — every chat request 502'd instantly. The route now
- * drives the upstream call through undici's own `request()` instead, so
- * these tests mock the `undici` module's `request` export directly (not
- * `global.fetch`, which this route no longer calls at all).
+ * #3440: this route used to drive its upstream call through the runtime's
+ * built-in `fetch` with a `dispatcher` built from the `undici` package in
+ * package.json. Global fetch is backed by a different undici major (Node 24
+ * embeds 7.30.1; Next bundles its own on some paths), so that dispatcher was
+ * rejected with `UND_ERR_INVALID_ARG` before any network I/O — every chat
+ * request 502'd instantly. The route now drives the upstream call through
+ * undici's own `request()` instead, so these tests mock the `undici`
+ * module's `request` export directly (not `global.fetch`, which this route
+ * no longer calls at all).
  *
  * See route.real-dispatch.test.ts for a companion suite that exercises the
  * real (unmocked) undici transport against a real local HTTP server — the
@@ -315,21 +316,32 @@ describe('/api/chat/stream POST route', () => {
 
   it('falls back to Date.now() when performance.now is unavailable', async () => {
     mockUpstream(200, makeBody([]));
+
+    // The route and the request are built BEFORE performance.now is taken
+    // away (#4238). vitest 5's module runner times each module it evaluates
+    // with `performance.now()`, so importing the route under a
+    // `performance.now === undefined` global now dies inside vitest's own
+    // import machinery ("performance.now is not a function") before the
+    // route's code runs at all. The route reads performance.now per CALL, in
+    // nowMs(), not at module scope — so narrowing the window to the POST
+    // itself tests the same fallback and stops testing vitest.
+    const { POST } = await import(ROUTE_PATH);
+    const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
+
     const originalNow = performance.now;
     // Shadow the prototype's now() with a non-function own property to
     // simulate a runtime where performance exists but lacks now().
     Object.defineProperty(performance, 'now', { value: undefined, configurable: true });
 
+    let response: Response;
     try {
-      const { POST } = await import(ROUTE_PATH);
-      const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
-      const response = (await POST(req as never)) as Response;
-
-      expect(response.status).toBe(200);
-      await drainStream(response);
+      response = (await POST(req as never)) as Response;
     } finally {
       Object.defineProperty(performance, 'now', { value: originalNow, configurable: true });
     }
+
+    expect(response.status).toBe(200);
+    await drainStream(response);
   });
 
   it('uses NYXGPT_API_BASE_URL when set to build the upstream URL', async () => {

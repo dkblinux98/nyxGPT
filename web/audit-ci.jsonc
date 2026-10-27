@@ -195,6 +195,11 @@
   //                   version). An `overrides` entry on @vitest/mocker would
   //                   also have worked and was rejected: a `^4.1.12` floor
   //                   forced into a future vitest 5 tree is the next trap.
+  //                   That tree arrived days later: #4238 moved all three
+  //                   to `^5.0.5`, and the rejected override would have had
+  //                   to be hunted down and deleted by hand first. Keep
+  //                   declining overrides whose only job is to raise a
+  //                   floor the parent's own range already reaches.
   //
   // `tests/unit/test_npm_dependency_floors.py` was extended to cover exactly
   // those three blind spots -- both manifests, `overrides` as a declared

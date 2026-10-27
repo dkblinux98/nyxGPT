@@ -5,15 +5,24 @@ import { logger } from "@/lib/logger";
 import { resolveRequestId, withRequestId } from "@/lib/requestContext";
 
 // This route drives the upstream call through the `undici` package's own
-// request() rather than Next's built-in `fetch`. Next 16 bundles its own
-// (newer-major) undici for global fetch; handing that fetch a dispatcher
-// built from the `undici` version pinned in package.json broke instantly
-// with UND_ERR_INVALID_ARG (the v7-bundled fetch's dispatch-handler
-// interface renamed the v6 Agent's `onError` callback) — see #3440. Calling
-// this package's own request() sidesteps the coupling entirely: the HTTP
+// request() rather than the runtime's built-in `fetch`. Global fetch is
+// backed by an undici this repo does not choose — Node 24 embeds 7.30.1
+// (`process.versions.undici`), and Next bundles its own on some paths —
+// and handing that fetch a `dispatcher` built from the `undici` in
+// package.json broke instantly with UND_ERR_INVALID_ARG, because the two
+// majors do not agree on the dispatch-handler interface (in #3440 it was
+// the v7-backed fetch rejecting a v6 Agent, whose `onError` callback had
+// been renamed).
+//
+// Which of the two is newer is NOT the point and has in fact flipped: as
+// of #4238 this package is undici 8 and the embedded one is 7, the reverse
+// of the #3440 arrangement. The coupling is the defect either way, and
+// calling this package's own request() sidesteps it entirely — the HTTP
 // client and every option it understands come from the exact same undici
-// major version, regardless of what Next/Node happen to bundle for global
-// fetch. Do not resurrect a `dispatcher`/Agent passed into `fetch()` here.
+// major, whatever the runtime happens to embed. Do not resurrect a
+// `dispatcher`/Agent passed into `fetch()` here;
+// `web/tests/app/api/no-foreign-fetch-dispatcher.test.ts` fails the build
+// if one comes back.
 const HEADERS_TIMEOUT_MS =
   Number(process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS) || 300_000; // 5 min: must outlast a cold local-model load, not just a warm one
 

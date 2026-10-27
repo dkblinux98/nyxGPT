@@ -3690,15 +3690,19 @@ them.
   across the whole web tier. That is daylight work with its own verification"
   — is not superseded; #4194 is that daylight work, and it is why the two
   bumps P-005 held back are *not* smuggled in with it. **(c)** Those two
-  remain open, and their Node 20 blocker is the only thing that lifted:
-  `undici` is still `^6.29.1` (`web/package.json:37`), pinned back from
+  were open at the time of writing, and their Node 20 blocker was the only
+  thing that had lifted: `undici` sat at `^6.29.1`, pinned back from
   `^8.11.2` by #3986 precisely because `undici@8` declares
   `engines.node >= 22.19.0` and calls `markAsUncloneable`, absent on 20 — both
-  satisfied on 24; and `vitest` is still `^4.1.12`, where vitest 5 wanted the
-  `@types/node` bump that has now happened. **Filed as #4238**, not left as a
-  parked entry: the reason they were held is gone, so what is left is ordinary
-  dependency work with its own verification, and a ledger entry is the wrong
-  place to keep a work item alive.
+  satisfied on 24; and `vitest` sat at `^4.1.12`, where vitest 5 wanted the
+  `@types/node` bump that #4194 made. **Filed as #4238**, not left as a
+  parked entry: the reason they were held was gone, so what was left was
+  ordinary dependency work with its own verification, and a ledger entry is
+  the wrong place to keep a work item alive. **Both were taken in #4238**
+  (`undici` `^8.12.3`, `vitest`/`@vitest/ui`/`@vitest/coverage-v8` `^5.0.5`),
+  so this clause is now history rather than a standing description of the
+  manifest — read `web/package.json`, not this paragraph, for what is
+  pinned today.
   Held retired by `tests/unit/test_node_version_declaration.py` rather than by
   this paragraph — re-pinning the web tier to a Node major other than the
   declaration fails the build at `pytest`, which is what P-005's own guard

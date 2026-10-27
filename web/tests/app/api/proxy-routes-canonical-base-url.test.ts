@@ -36,9 +36,12 @@ const FORBIDDEN_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
 ];
 
 // #3440: chat/stream drives the upstream call through undici's own
-// request() instead of apiFetch()/fetch(), because Next 16's bundled fetch
-// rejects a dispatcher built from the pinned (older-major) `undici`
-// dependency. It still must resolve the backend URL and attach the auth
+// request() instead of apiFetch()/fetch(), because global fetch is backed
+// by a DIFFERENT undici major from the `undici` dependency and rejects a
+// dispatcher built from it. (Which one is newer has flipped since: the
+// dependency is undici 8 as of #4238, the runtime embeds 7. The mismatch,
+// not the direction, is the defect.) It still must resolve the backend
+// URL and attach the auth
 // header the same way every other route does — via apiUrl()/attachApiKey()
 // from @/lib/apiProxy — so it's checked against an equivalent, not exempted
 // from the requirement outright.
