@@ -10,11 +10,19 @@ in a suppression file.
 > *count* of findings below ("4 currently-accepted high findings", "exit 0,
 > 4 findings allowlisted") describes the dependency graph as it stood on
 > 2026-08-03 and has since gone stale more than once without any code
-> change — #3644 emptied the allowlist, and #4150 repopulated it with the
-> `braces` advisory that has no patched release. For what is allowlisted
-> **now**, and the reasoning per entry, read `web/audit-ci.jsonc`;
-> `security/README.md` is the live overview. The mechanism described here
-> is still accurate; only the numbers are historical.
+> change — #3644 emptied the allowlist, #4150 repopulated it with the
+> `braces` advisory, and #4239 emptied it again when that advisory was
+> *withdrawn* upstream. For what is allowlisted **now**, and the reasoning
+> per entry, read `web/audit-ci.jsonc`; `security/README.md` is the live
+> overview.
+>
+> **Two mechanism changes since, both in `security/README.md`:** the
+> `pip-audit` step no longer passes `--ignore-vuln` and the `audit-ci` step
+> is no longer bare — both route through
+> `scripts/ci/stale_suppressions.py`, which also fails the build on a
+> suppression entry that matches nothing (#4239). The step YAML quoted
+> below is the #3501 original, kept as the record of what was hand-carried;
+> `.github/workflows/security-scan.yml` is the live file.
 
 ## What ships in this change
 

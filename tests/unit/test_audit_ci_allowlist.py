@@ -31,6 +31,19 @@ so the scoping is live rather than decorative.
 Hence the three assertions below: the gate's threshold cannot be quietly
 lowered, an entry cannot be blanket-scoped, and an entry cannot be added
 without its reasoning recorded in the file beside it.
+
+WHAT THIS TEST DOES NOT ASSERT, and where that lives now (#4239). Shape is
+not liveness: both `braces` entries kept a perfect shape after
+GHSA-vfj7-8cjw-p6xm was *withdrawn* on 2026-10-23 and they stopped
+suppressing anything, because "does this entry still match a finding?" is a
+question only the live scanner can answer. `npm run audit:ci` now routes
+through `scripts/ci/stale_suppressions.py`, which fails the build on
+audit-ci's "Consider not allowlisting ..." report;
+`tests/unit/test_stale_suppressions.py` guards that gate and the fact that
+the two scanner steps still run it. The allowlist is empty again as a
+result -- which is why the negative cases below are parametrized rather
+than read off the live config: a shape guard that only exercises the
+committed entries asserts nothing at all while there are none.
 """
 
 from __future__ import annotations

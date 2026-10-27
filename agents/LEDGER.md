@@ -3279,6 +3279,32 @@ rather than mechanism, and nothing can enforce them.
   every run and blocked #4194. The `web/Dockerfile` completion check and fetch
   policy from #4205 stay; only the test is gone.
   Source: owner, 2026-10-27, on #4196; #4205.
+- **D-083** · 2026-10-27 · developer-agent (#4239) — **A suppression that
+  suppresses nothing fails the build, and its own revisit condition is not
+  trusted to retire it.** Every suppression register in this tree records a
+  finding with a reason and a condition that would retire the entry, and the
+  condition can be bypassed by events it does not name: GHSA-vfj7-8cjw-p6xm
+  was **withdrawn** on 2026-10-23 ("not a practically exploitable
+  vulnerability") rather than fixed, so `web/audit-ci.jsonc`'s two
+  path-scoped `braces` entries stopped matching anything while `braces`
+  stayed at 3.0.3 and both dependency paths stayed exactly where they were —
+  neither of the two conditions the entries watched. `audit-ci` reported it
+  as a *warning* on every green run for four days, and a sweep on an
+  unrelated issue is what found it. So liveness is now gated, not watched:
+  `scripts/ci/stale_suppressions.py` is the one place implementing the rule,
+  and both scanner registers route through it (`npm run audit:ci`, and the
+  `security-scan` pip-audit step, which stops passing `--ignore-vuln`
+  because an unmatched ignore is silently accepted). The other two registers
+  already had the equivalent and keep theirs
+  (`test_codeql_adjudications.py::test_every_entry_names_a_function_that_exists`,
+  `test_npm_dependency_floors.py::test_no_deliberate_exact_pin_is_stale`).
+  Corollary for whoever deletes a dead entry: record **why it went quiet** —
+  upgraded, re-scoped and withdrawn justify different next actions, and
+  `GET /advisories/<GHSA-id>` (no token needed) is what distinguishes them.
+  Source: #4239; `scripts/ci/stale_suppressions.py`,
+  `tests/unit/test_stale_suppressions.py`, `security/README.md` §A
+  suppression that suppresses nothing; the entries were added by #4150,
+  commentary by #4192/#4221/#4226, found by the #4238 sweep.
 
 ## Parked
 

@@ -474,9 +474,12 @@ when a developer needs to touch them.
   pip-audit) or `web/package.json`/`web/package-lock.json` (audit-ci):
   ```bash
   bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high
-  pip-audit
+  python3 scripts/ci/stale_suppressions.py pip-audit
   cd web && npm run audit:ci
   ```
+  Both of the last two are the gate CI runs, not an approximation of it:
+  they fail on an unsuppressed finding **and** on a suppression entry that
+  matches nothing (#4239).
 - **A new HIGH-severity/HIGH-confidence bandit finding, an unignored
   pip-audit vulnerability, or a new high/critical npm advisory not already
   in the allowlist will fail CI.** Fix the underlying issue (upgrade the
@@ -488,18 +491,29 @@ when a developer needs to touch them.
     (bandit's own mechanism -- no separate baseline file).
   - pip-audit: add the vuln ID to `security/pip-audit-ignore.txt`.
   - npm/audit-ci: add a **path-scoped** entry to the `allowlist` array in
-    `web/audit-ci.jsonc` -- the advisory ID, a `|`, then the full `>`-separated
-    dependency path, e.g.
-    `GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces` --
-    with the reasoning in a full-line `//` comment above it. A bare module
-    name or bare advisory ID **fails the build**
-    (`tests/unit/test_audit_ci_allowlist.py`): those forms suppress the
-    advisory everywhere it appears, including paths nobody triaged.
+    `web/audit-ci.jsonc` -- the advisory ID, a `|`, then the full
+    `>`-separated dependency path as audit-ci prints it ready to paste
+    (`<GHSA-id>|<parent>child>…>vulnerable-package`) -- with the reasoning in
+    a full-line `//` comment above it. A bare module name or bare advisory ID
+    **fails the build** (`tests/unit/test_audit_ci_allowlist.py`): those forms
+    suppress the advisory everywhere it appears, including paths nobody
+    triaged.
   Call out any new suppression explicitly in the PR description so review
   evaluates the justification, not just the diff.
-- A dependency bump that resolves an existing allowlisted/ignored finding
-  should remove that entry in the same PR -- don't let suppressions outlive
-  the vulnerability they were accepting.
+- **A suppression that suppresses nothing fails the build** (#4239). A
+  dependency bump that resolves an allowlisted/ignored finding removes that
+  entry in the same PR, and `scripts/ci/stale_suppressions.py` -- which both
+  `npm run audit:ci` and the workflow's pip-audit step route through -- is
+  what notices when nobody does. Do not rely on the entry's own REVISIT
+  condition to retire it: #4239's watched the two ways the `braces` advisory
+  could be *fixed*, and it was **withdrawn** instead, so two dead entries sat
+  there as a warning on every green run.
+- **Record WHY an entry went quiet when you delete it**, not just that it
+  did. "The advisory no longer reports" has at least three causes --
+  upgraded, re-scoped, withdrawn -- and they justify different next actions.
+  Read the advisory before concluding: `curl -s
+  https://api.github.com/advisories/<GHSA-id>` needs no token and returns
+  `withdrawn_at`, `first_patched_version` and the current range.
 
 ## 3e) Self-heal retry budget, same-signature disproof, and reachability-aware FIXED (#3689)
 
@@ -841,7 +855,7 @@ Run ALL of the following checks and fix issues until they pass:
 - `pytest -v` - ALL tests MUST pass (0 failures, 0 errors)
 - `./scripts/agents/validate-web-routes.sh` - If you modified web routes or API endpoints
 - `bandit -c pyproject.toml -r src/ --severity-level high --confidence-level high` - If you modified `src/` (#3501)
-- `pip-audit` - If you modified Python dependencies (#3501)
+- `python3 scripts/ci/stale_suppressions.py pip-audit` - If you modified Python dependencies (#3501, #4239)
 - `cd web && npm run audit:ci` - If you modified `web/package.json`/`web/package-lock.json` (#3501)
 
 Run this loop locally exactly as described — do not rely on `claude-code-review.yml`'s
