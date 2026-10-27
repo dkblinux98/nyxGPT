@@ -17796,7 +17796,19 @@ def _install_declared_node() -> list[OpsResult]:
         # Two steps, both privileged: NodeSource's script adds the repo, the
         # package manager then installs from it. `_privileged_run` is what puts
         # the `sudo` on, consistently with every other privileged ops step.
-        setup = _privileged_run(["bash", "-c", f"curl -fsSL {url} | bash -"])
+        #
+        # `-o pipefail` is load-bearing: without it a `curl` that cannot reach
+        # NodeSource exits non-zero into a `bash -` that reads empty stdin and
+        # exits 0, so the pipeline reports success, this step proceeds to
+        # `install nodejs`, and the DISTRO's Node (18 on AL2023) goes on. The
+        # end-state re-read in `_ensure_declared_node` still catches the wrong
+        # major honestly, but it attributes it to the package-manager step
+        # rather than to the unreachable repository, which is the one fact an
+        # operator needs. The other two NodeSource call sites already run under
+        # a `set -...pipefail` shell (`ec2-user-data-linux.sh.tmpl` line 21,
+        # `cloud_deploy.PROVISION_SCRIPT_TEMPLATE`); this one spawns its own
+        # `bash`, which inherits no shell options, so it has to say so itself.
+        setup = _privileged_run(["bash", "-o", "pipefail", "-c", f"curl -fsSL {url} | bash -"])
         if setup is None:
             # "Could not even try" kept apart from "tried and failed", the
             # distinction `_privileged_run` exists to preserve: the operator

@@ -486,3 +486,69 @@ def test_the_published_web_tarball_carries_the_declaration():
         "the published web tarball's package.json does not declare "
         f"engines.node = {node_runtime.NODE_ENGINES_RANGE!r}"
     )
+
+
+# A bare existence check on the toolchain, in any of the spellings this tree
+# uses. Group 1 is the program, so the failure message can name it.
+_BARE_TOOLCHAIN_CHECK = re.compile(r"""(?:shutil\.)?_?which\(\s*["'](node|npm|npx)["']""")
+
+#: Files allowed to ask `which("node")`. Exactly one: the module whose JOB is
+#: resolution. Anything else asking is a second place deciding which Node runs.
+_TOOLCHAIN_RESOLVERS = frozenset({"src/nyxgpt/node_runtime.py"})
+
+
+def _python_sources() -> list[Path]:
+    """Every shipped/operational Python file: `src/` and `scripts/`.
+
+    Not `tests/`: a test may legitimately assert what `which` returns, and
+    several stub it.
+    """
+    found: list[Path] = []
+    for root in ("src", "scripts"):
+        for dirpath, dirnames, filenames in os.walk(REPO_ROOT / root):
+            dirnames[:] = [d for d in dirnames if d not in _PRUNED_DIRS]
+            found.extend(Path(dirpath) / n for n in filenames if n.endswith(".py"))
+    return sorted(found)
+
+
+def test_nothing_decides_the_node_toolchain_by_bare_existence():
+    """`which("node") is not None` is true of every wrong major (#4194).
+
+    This is the OTHER half of the defect, and the half a version-literal sweep
+    cannot see. Six independent checks across `ops.py`, `wizard.py` and
+    `cloud_artifact_smoke.py` asked only whether a `node` existed, so a host on
+    Node 26 was reported as "Node OK" by all six and the install proceeded to
+    build the web bundle with it. Fixing the literals without fixing these
+    would leave every surface derived from the declaration and nothing on any
+    host actually CHECKED against it.
+
+    So: resolution and classification live in `node_runtime`, and no other
+    shipped or operational file asks the question for itself. The guard is here
+    rather than in a review checklist because the six copies were added one at
+    a time, each reasonable on its own -- `scripts/restart-activation-smoke.py`
+    was a seventh, found by the class sweep after the first six were
+    consolidated, and nothing but this test would have found an eighth.
+    """
+    offenders: list[str] = []
+    scanned = 0
+    for path in _python_sources():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel in _TOOLCHAIN_RESOLVERS:
+            continue
+        scanned += 1
+        body = _strip_commentary(path.read_text(encoding="utf-8"), python=True)
+        for program in set(_BARE_TOOLCHAIN_CHECK.findall(body)):
+            offenders.append(f"  {rel}: which({program!r})")
+
+    assert scanned > 20, (
+        f"only {scanned} Python sources were scanned -- this guard has lost its "
+        "subject (moved tree? renamed directory?) and would pass vacuously"
+    )
+    assert not offenders, (
+        "these ask only whether Node/npm EXISTS, which is true of every wrong "
+        "major -- the #4194 classification defect:\n"
+        + "\n".join(sorted(offenders))
+        + "\nUse `node_runtime.node_version_report()` (a verdict against the "
+        "declaration) or `node_runtime.resolve_node_bin()`/`resolve_npm_bin()` "
+        "(the declared toolchain's path), so one report answers for every surface."
+    )

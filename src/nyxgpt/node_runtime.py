@@ -148,12 +148,18 @@ def resolve_npm_bin() -> str:
 
     Same keg, deliberately: an `npm` from one major driving a `node` from
     another is the mismatch this module removes, wearing a different name.
+
+    So an override with no `npm` beside it answers "" and does NOT fall through
+    to the keg or `PATH`. Falling through would hand back exactly that
+    mismatch -- a pinned `node` and an unpinned `npm` -- and silently, since the
+    caller asked for "the npm belonging to the declared Node" and would be
+    given one belonging to some other. "" is the honest answer, and the callers
+    already have their own documented fallbacks for it.
     """
     override = os.environ.get(NODE_BIN_ENV_VAR, "").strip()
     if override:
         sibling = os.path.join(os.path.dirname(override), "npm")
-        if os.access(sibling, os.X_OK):
-            return sibling
+        return sibling if os.access(sibling, os.X_OK) else ""
     if platform.system() == "Darwin":
         for bin_dir in homebrew_node_bin_dirs():
             candidate = os.path.join(bin_dir, "npm")

@@ -107,6 +107,33 @@ def test_no_node_anywhere_resolves_to_empty(monkeypatch):
     assert node_runtime.resolve_node_bin() == ""
 
 
+def test_the_override_takes_the_npm_beside_it(monkeypatch):
+    """A pinned `node` is served by ITS OWN `npm`, when one is there."""
+    monkeypatch.setenv(node_runtime.NODE_BIN_ENV_VAR, "/tmp/injected/node")
+    monkeypatch.setattr(node_runtime.os, "access", lambda path, mode: True)
+    monkeypatch.setattr(node_runtime.shutil, "which", lambda prog: f"/usr/bin/{prog}")
+    assert node_runtime.resolve_npm_bin() == "/tmp/injected/npm"
+
+
+def test_an_override_with_no_npm_beside_it_answers_empty_not_someone_elses(monkeypatch):
+    """The mismatch this module removes, wearing its other name.
+
+    `NYXGPT_NODE_BIN` pins `node`. If there is no `npm` in that directory, the
+    earlier code fell through to the keg and then to `PATH` -- handing back an
+    `npm` from a DIFFERENT major to drive the pinned `node`, which is exactly
+    the pairing `resolve_npm_bin`'s docstring says it exists to prevent, and
+    silently, because the caller asked for "the npm belonging to the declared
+    Node". "" is the honest answer; the callers have their own fallbacks.
+    """
+    monkeypatch.setenv(node_runtime.NODE_BIN_ENV_VAR, "/tmp/injected/node")
+    monkeypatch.setattr(node_runtime.os, "access", lambda path, mode: False)
+    # Both of the paths that used to be taken instead are made to answer, so a
+    # regression returns one of them rather than failing to find anything.
+    monkeypatch.setattr(node_runtime.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(node_runtime.shutil, "which", lambda prog: f"/usr/bin/{prog}")
+    assert node_runtime.resolve_npm_bin() == ""
+
+
 def test_homebrew_prefix_env_is_searched_before_the_standard_roots(monkeypatch):
     """An unusual Homebrew root (or a `brew` session's own env) is honoured."""
     monkeypatch.setenv("HOMEBREW_PREFIX", "/custom/brew")
@@ -452,6 +479,56 @@ def test_the_reconciler_installs_on_a_wrong_host_and_reverifies(monkeypatch):
     results = ops._ensure_declared_node()
     assert not results[-1].ok
     assert node_runtime.NODE_REMEDIATION_COMMAND in (results[-1].details or "")
+
+
+def test_the_nodesource_pipeline_fails_when_the_fetch_fails(monkeypatch):
+    """An unreachable NodeSource must fail AS an unreachable NodeSource.
+
+    `curl ... | bash -` in a plain shell reports the exit status of `bash -`,
+    which reads empty stdin and exits 0. So a fetch that could not reach the
+    repository looked like a repository that was added, the step went on to
+    `install nodejs`, and the DISTRO's Node (18 on AL2023) went on instead.
+    `_ensure_declared_node`'s end-state re-read still calls that host wrong,
+    but it names the package manager, not the one thing an operator can act
+    on. Both halves are asserted: that the invocation asks for `pipefail`, and
+    -- by running the two shells -- that asking for it is what makes the
+    difference.
+    """
+    from nyxgpt import ops
+
+    monkeypatch.setattr(ops, "_is_macos", lambda: False)
+    monkeypatch.setattr(ops, "_is_linux", lambda: True)
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}" if prog == "dnf" else None)
+    calls: list[list[str]] = []
+
+    def fake_privileged(cmd, *, expected=False):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 1, "", "could not resolve host")
+
+    monkeypatch.setattr(ops, "_privileged_run", fake_privileged)
+
+    results = ops._install_declared_node()
+    assert not results[0].ok
+    assert "NodeSource repository" in results[0].message
+
+    setup_argv = calls[0]
+    assert setup_argv[0] == "bash"
+    assert "-o" in setup_argv and "pipefail" in setup_argv, (
+        "the NodeSource fetch runs in a shell this code spawns itself, which "
+        f"inherits no shell options, so it has to set pipefail: {setup_argv}"
+    )
+    pipeline = setup_argv[-1]
+    assert "| bash -" in pipeline and node_runtime.NODESOURCE_SETUP_SCRIPT in pipeline
+
+    # The mechanism, executed: the same pipeline shape with a failing fetch,
+    # with and without the option. `false` stands in for the unreachable curl.
+    shape = "false | bash -"
+    without = subprocess.run(["bash", "-c", shape], capture_output=True, text=True)
+    with_it = subprocess.run(
+        ["bash", "-o", "pipefail", "-c", shape], capture_output=True, text=True
+    )
+    assert without.returncode == 0, "the defect no longer reproduces; re-derive this test"
+    assert with_it.returncode != 0, "pipefail did not propagate the fetch's failure"
 
 
 def test_the_reconciler_honours_an_explicit_pin_without_installing(monkeypatch):

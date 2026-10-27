@@ -308,8 +308,23 @@ def proxied_status() -> int:
 
 
 def main() -> int:  # noqa: C901 -- a linear scenario reads better in one place
-    if shutil.which("npm") is None:
-        print("::error::npm is required to run the web tier for this smoke", flush=True)
+    # The precondition is the DECLARED Node, not "an npm exists" (#4194). This
+    # smoke starts the real web tier through the native wrapper, so a wrong
+    # major here fails somewhere inside `npm run start` with a stack trace from
+    # Next rather than at the top with the version in the message -- and
+    # `shutil.which("npm")`, which this used to ask, is true of every major.
+    from nyxgpt import node_runtime
+
+    node = node_runtime.node_version_report()
+    if not node.ok:
+        print(f"::error::{node.summary()}", flush=True)
+        return 2
+    if not node_runtime.resolve_npm_bin():
+        print(
+            f"::error::npm is required to run the web tier for this smoke; "
+            f"none found beside {node.path}",
+            flush=True,
+        )
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="restart-activation-smoke-"))
