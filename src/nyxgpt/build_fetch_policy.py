@@ -14,7 +14,8 @@ Captured deliberately on a Linux runner, 2026-10-21 -- ``docker build
 the same sandbox answers ``EAI_AGAIN``). This was npm 10 (Node 20); npm 11
 retries each package instead of crashing. A CI job that re-injected the outage
 was retired by the owner (ledger D-082): a transient network failure is
-retried and diagnosed by a person, not guarded by a test::
+handled the way a person would -- retry, wait if still flaky, check for an
+upstream outage -- not guarded by a test::
 
     #8 [deps 4/4] RUN npm ci
     #8 141.1 npm error Exit handler never called!

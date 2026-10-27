@@ -3262,12 +3262,15 @@ rather than mechanism, and nothing can enforce them.
   Node.js version; related #4216 (the `.nvmrc` bootstrap that unblocked it),
   #4192, #3761.
 - **D-082** · 2026-10-27 · owner (#4194) — **A transient network failure is
-  retried and diagnosed by a person, not guarded by a fault-injection test.**
-  The executed-verification gate (D-006) does not extend to "the network was
-  down": a human doing the RCA on a build that failed on a fetch sees the
-  network was the cause and runs it again, and if it keeps failing, checks
-  whether the outage is theirs or upstream. A test for that condition is built
-  only when it recurs often enough to cost more than the test does. Retired
+  handled the way a person would handle it, not guarded by a fault-injection
+  test.** Whoever hits it, agent or owner, does the RCA as a person would:
+  sees from the log that the network was the cause and runs it again; if it
+  is still flaky, waits a while; if it keeps failing, checks whether the
+  outage is upstream (the registry's status page, a down-detector, other
+  sites) before looking further. It is not escalated just for being a network
+  failure. The executed-verification gate (D-006) does not extend to "the
+  network was down". A test for that condition is built only when it recurs
+  often enough to cost more than the test does. Retired
   under this rule: `image-build-fetch-policy-smoke` (#4205), a required job that
   rebuilt the web image with the network off and waited for npm to give up.
   Its result depended on how a given npm version fails (npm 10 crashes within
