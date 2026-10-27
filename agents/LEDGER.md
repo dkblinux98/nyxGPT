@@ -3231,6 +3231,55 @@ rather than mechanism, and nothing can enforce them.
   own sink.
   Source: #4222; related #4164, #4192; extends **D-066**, **D-067**.
 
+- **D-081** · 2026-10-24 · developer (#4194) — **nyxGPT declares exactly one
+  Node.js major, and every place that installs, tests or runs Node derives it
+  from that declaration.** The declaration is `.nvmrc` plus
+  `src/nyxgpt/node_runtime.py` (`NODE_MAJOR`) — two spellings of one value,
+  because the Python side has to answer on an *artifact* install where there is
+  no checkout to read. The chosen line is **24** (Active LTS; 20 reached
+  end-of-life in April 2026, 22 is in maintenance), written as the range
+  `24.x` and never `>=24`: `>=` is precisely what let `brew upgrade node` walk
+  the macOS install onto 26 with nothing to say so. Before this, seven CI
+  steps and `web/Dockerfile` said 20, the retro-dashboard smoke said 22, the
+  Linux/EC2 bootstraps each carried their own `setup_20.x`, and macOS — the
+  platform with no pin at all — ran whatever Homebrew's unversioned `node` was
+  that week, so CI structurally could not break on the Node users run and the
+  Node it did test was out of support. Two consequences worth not re-deriving:
+  `node@NN` is **keg-only**, and that is the property being relied on (the
+  declared Node is reachable by path and not by name, so a `brew upgrade` of
+  the unversioned formula cannot move it); and `engines` without
+  `engine-strict=true` is scrollback rather than a gate, which is why `web/`
+  carries its own `.npmrc` — it ships as a standalone tarball the keg
+  `npm ci`s with no repo above it. **`ops install` reconciles the runtime, it
+  does not merely refuse it**: four install steps gate on the declared Node,
+  so a gate with no provisioning step would make the repo-less install path
+  (`pip install nyxgpt`, then `nyxgpt ops install`, no checkout) stop with four
+  failures and a command to type — the same reasoning that put the Docker
+  engine step there (#3632). `nyxgpt ops node` and that step share one
+  reconciler, per **D-066**.
+  Source: #4194; `tests/unit/test_node_version_declaration.py` (the guard that
+  names every surface when the line moves); `docs/ops.md` §The declared
+  Node.js version; related #4216 (the `.nvmrc` bootstrap that unblocked it),
+  #4192, #3761.
+- **D-082** · 2026-10-27 · owner (#4194) — **A transient network failure is
+  handled the way a person would handle it, not guarded by a fault-injection
+  test.** Whoever hits it, agent or owner, does the RCA as a person would:
+  sees from the log that the network was the cause and runs it again; if it
+  is still flaky, waits a while; if it keeps failing, checks whether the
+  outage is upstream (the registry's status page, a down-detector, other
+  sites) before looking further. It is not escalated just for being a network
+  failure. The executed-verification gate (D-006) does not extend to "the
+  network was down". A test for that condition is built only when it recurs
+  often enough to cost more than the test does. Retired
+  under this rule: `image-build-fetch-policy-smoke` (#4205), a required job that
+  rebuilt the web image with the network off and waited for npm to give up.
+  Its result depended on how a given npm version fails (npm 10 crashes within
+  minutes, npm 11 retries every package as the fetch policy tells it to), not
+  on anything nyxGPT does. On Node 24 it ran into the job's 30-minute limit on
+  every run and blocked #4194. The `web/Dockerfile` completion check and fetch
+  policy from #4205 stay; only the test is gone.
+  Source: owner, 2026-10-27, on #4196; #4205.
+
 ## Parked
 
 - **P-001** · 2026-08-10 · owner — Intelligent test selection: scoping CI and
@@ -3275,26 +3324,6 @@ rather than mechanism, and nothing can enforce them.
   Revisit when: nyxAgent has its own repository and configuration, at which
   point these move there rather than being deleted.
   Source: owner in session, 2026-08-20; `example.config.ini` §`[github]`.
-
-- **P-005** · 2026-10-02 · developer-agent — Moving the web tier's Node
-  baseline from **20 to 22** is parked. `web/Dockerfile` (all three stages) and
-  every workflow that runs npm in `web/` stay on Node 20, and a web dependency
-  requiring a newer major is pinned back rather than accommodated — which is
-  what `undici` was, from `^8.11.2` to `^6.29.0`, on this branch.
-  Reason: Node 20 is past its maintenance window, so the move is coming; it is
-  not a dependency pin. It needs `@types/node` off `^20` (vitest 5 already
-  wants `^22.0.0 || >=24.0.0`), a re-type-check of the whole web tier, and
-  all three Dockerfile stages plus seven workflows moved together — the same
-  reasoning the owner gave on `b3a358db` for reverting the vitest 5 drag
-  instead of completing it: "a @types/node major is a type-checking change
-  across the whole web tier. That is daylight work with its own verification."
-  Doing it mid-release, from an unrelated issue, ahead of acceptance, is not.
-  Revisit when: v3.0.0 has shipped, as its own issue — and note that
-  `vitest 5` is waiting on the same `@types/node` bump, so the two belong in
-  one piece of work.
-  Source: this branch (#3986); `tests/unit/test_web_node_engines.py` is the
-  guard that makes a silent re-bump fail at `pytest` rather than in fifteen
-  smoke jobs.
 
 - **P-006** · 2026-10-04 · developer-agent (#4043's third round) — The
   `acceptance-standard` red on #4043's head is **not fixed on that branch**,
@@ -3638,3 +3667,40 @@ them.
   copies, so the sentences are now held retired by
   `tests/unit/test_codeql_adjudications.py::test_no_file_still_asserts_the_retired_access_premise`
   — the guard, not the prose, is what keeps them gone.
+
+- **S-012** — ~~"Moving the web tier's Node baseline off 20 is parked:
+  `web/Dockerfile` (all three stages) and every workflow that runs npm in
+  `web/` stay on Node 20, and a web dependency requiring a newer major is
+  pinned back rather than accommodated"~~ (**P-005**, 2026-10-02, #3986).
+  Superseded 2026-10-27 by **D-081** (#4194), which *is* P-005's own revisit
+  condition — "v3.0.0 has shipped, as its own issue". The baseline is now the
+  single declaration (`.nvmrc` / `node_runtime.NODE_MAJOR` = **24**), every
+  Dockerfile stage and every workflow derives from it, and `@types/node` is
+  `^24`. Listed because P-005 did not merely go out of date: left standing it
+  instructs the next session to **pin a dependency back** and to treat the
+  move as not-to-be-worked, and both are now wrong — the first reverses
+  **D-081**, the second re-parks work that is done.
+  What of it stays live, so this is not read as "all of P-005 is void":
+  **(a)** when a dependency demands a major *above* the declaration, pinning
+  it back is still one of the two honest answers — `test_web_node_engines.py`
+  offers both, and the other is to move the declaration everywhere at once,
+  which is what #4194 did. What is retired is pin-back as the *standing
+  default* at a baseline nobody was allowed to move. **(b)** The owner's
+  reasoning on `b3a358db` — "a `@types/node` major is a type-checking change
+  across the whole web tier. That is daylight work with its own verification"
+  — is not superseded; #4194 is that daylight work, and it is why the two
+  bumps P-005 held back are *not* smuggled in with it. **(c)** Those two
+  remain open, and their Node 20 blocker is the only thing that lifted:
+  `undici` is still `^6.29.1` (`web/package.json:37`), pinned back from
+  `^8.11.2` by #3986 precisely because `undici@8` declares
+  `engines.node >= 22.19.0` and calls `markAsUncloneable`, absent on 20 — both
+  satisfied on 24; and `vitest` is still `^4.1.12`, where vitest 5 wanted the
+  `@types/node` bump that has now happened. **Filed as #4238**, not left as a
+  parked entry: the reason they were held is gone, so what is left is ordinary
+  dependency work with its own verification, and a ledger entry is the wrong
+  place to keep a work item alive.
+  Held retired by `tests/unit/test_node_version_declaration.py` rather than by
+  this paragraph — re-pinning the web tier to a Node major other than the
+  declaration fails the build at `pytest`, which is what P-005's own guard
+  (`test_web_node_engines.py`, now reading the declaration as its baseline)
+  could not do while the baseline was a copy in `web/Dockerfile`.

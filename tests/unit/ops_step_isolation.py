@@ -56,6 +56,10 @@ INSTALL_STEP_FUNCS: tuple[str, ...] = (
     "_ensure_docker_engine",
     "migrate_legacy_volumes",
     "_reconcile_phantom_compose_app_containers",
+    # #4194. Machine-facing: on a host not already on the declared Node it runs
+    # `brew install node@NN` or adds NodeSource's repo and installs from it,
+    # both under `sudo`. Left unpatched it would provision the runner.
+    "_ensure_declared_node",
     "_ensure_web_deps",
     "_ensure_mcp_deps",
     "_ensure_cassandra_container",

@@ -11,10 +11,11 @@ What the reproduction actually showed
 -------------------------------------
 Captured deliberately on a Linux runner, 2026-10-21 -- ``docker build
 --network none --target deps web/``, DNS confirmed dead (a ``dns.lookup`` in
-the same sandbox answers ``EAI_AGAIN``). The capture is now a job rather than
-a recipe: ``scripts/image-build-fetch-policy-smoke.sh``, run by
-``.github/workflows/image-build-fetch-policy-smoke.yml``, injects the same
-condition on every change to this module or the Dockerfiles it governs::
+the same sandbox answers ``EAI_AGAIN``). This was npm 10 (Node 20); npm 11
+retries each package instead of crashing. A CI job that re-injected the outage
+was retired by the owner (ledger D-082): a transient network failure is
+handled the way a person would -- retry, wait if still flaky, check for an
+upstream outage -- not guarded by a test::
 
     #8 [deps 4/4] RUN npm ci
     #8 141.1 npm error Exit handler never called!

@@ -61,8 +61,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
+          node-version-file: '.nvmrc'
       - name: Build the dashboard and read its stamps back out of the rendered page
         run: bash tests/test_retro_dashboard_stamps.sh
 
@@ -80,8 +79,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-
+          node-version-file: '.nvmrc'
       # Removes the spend and churn dumps, then restores them: the notices must
       # appear in the first build and be gone in the second, and the build's
       # exit status must follow (#3808).

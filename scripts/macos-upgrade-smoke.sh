@@ -381,6 +381,48 @@ run_driver() {
 }
 
 # ---------------------------------------------------------------------------
+# Reading ONE subject's verdict out of `ops status`
+# ---------------------------------------------------------------------------
+#
+# `MISMATCH` is not this job's word; it is the word every `ops status` subject
+# uses for its own verdict. Since #4194 the output also carries
+# `Node runtime (web tier): MISMATCH ...` on a host whose `node` is not the
+# declared major -- which a macOS runner's is, routinely. A bare
+# `grep -q MISMATCH` over the whole transcript therefore reads ANOTHER
+# subject's verdict as this one's, and did: run 39679510191's
+# "ops status named a mismatch with the comparison reverted" fired on the Node
+# line while the injected api-build comparison was reporting a match exactly as
+# the injection intended. The injection half of a fault-injected check is the
+# half that must not be satisfiable by accident.
+#
+# So both readers go through here: the block whose header names this subject,
+# and nothing else. One function, because two copies of "which lines are mine"
+# is how they would diverge (CLAUDE.md "one source per decision").
+#
+# `grep ... <<<"$block"` rather than `sed ... | grep`: a reader that leaves
+# early takes the producer's EPIPE under `pipefail` (#4192), which
+# `tests/unit/test_sigpipe_pipeline_guard.py` fails the build over.
+#
+# The block ends at the first blank line OR the next unindented line, whichever
+# comes first. Every line a subject prints under its header is indented; the
+# next subject's header is not. Ending on the blank line alone made this reader
+# depend on every later section remembering to open with one, and the Node
+# runtime line did not: run 40090506617 read its `MISMATCH` as the api
+# build's and failed the injection half while the injected comparison reported
+# a match. `awk` reads the file itself, so there is no pipe to break.
+api_build_block() {
+  awk '/^Running api build/ { on = 1; print; next }
+       on && (/^$/ || /^[^ ]/) { exit }
+       on { print }' "$1"
+}
+
+api_build_says_mismatch() {
+  local block
+  block="$(api_build_block "$1")"
+  grep -q 'MISMATCH' <<<"$block"
+}
+
+# ---------------------------------------------------------------------------
 # 4. The defect, injected: revert the comparison in the installed keg.
 #
 # Pre-#4133 there was no comparison at all, so the closest faithful revert is
@@ -424,8 +466,9 @@ else
 fi
 
 nyxgpt ops status > "$WORK/status-injected.log" 2>&1 || true
-if grep -q 'MISMATCH' "$WORK/status-injected.log"; then
-  fail "ops status named a mismatch with the comparison reverted -- the injection did not reach the CLI"
+api_build_block "$WORK/status-injected.log"
+if api_build_says_mismatch "$WORK/status-injected.log"; then
+  fail "ops status named an api-build mismatch with the comparison reverted -- the injection did not reach the CLI"
 else
   pass "reverted, nyxgpt ops status reports nothing wrong (what the owner saw)"
 fi
@@ -442,8 +485,8 @@ pass "same_tree discriminates again"
 # ---------------------------------------------------------------------------
 log "nyxgpt ops status names the mismatch, both paths and the repair"
 nyxgpt ops status > "$WORK/status.log" 2>&1 || true
-sed -n '/Running api build/,/^$/p' "$WORK/status.log"
-if grep -q 'MISMATCH' "$WORK/status.log"; then
+api_build_block "$WORK/status.log"
+if api_build_says_mismatch "$WORK/status.log"; then
   pass "status says MISMATCH"
 else
   fail "nyxgpt ops status did not name the mismatch (AC3)"
@@ -463,7 +506,7 @@ fi
 if grep -qF "$NEW_KEG" "$WORK/status.log"; then
   pass "status names the installed keg's venv, resolved to the version it is"
 else
-  sed -n '/Running api build/,/^$/p' "$WORK/status.log"
+  api_build_block "$WORK/status.log"
   fail "nyxgpt ops status did not print the installed prefix under $NEW_KEG"
 fi
 if grep -qF 'nyxgpt ops restart api' "$WORK/status.log"; then

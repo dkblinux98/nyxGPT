@@ -54,8 +54,9 @@ context.setGlobalContextManager(new StackContextManager());
 // `localStorage` got node's undefined instead of a working Storage -- 182
 // failures, all "Cannot read properties of undefined (reading ...)". Replace
 // the stub with a real happy-dom Storage as a plain writable property, so the
-// suite behaves identically on every node version (CI pins node 20, where the
-// stub doesn't exist) and tests can still assign their own mocks. Note
+// suite behaves identically on every node version -- including the one
+// nyxGPT declares and the ones it did not, which is the point of not
+// depending on it -- and tests can still assign their own mocks. Note
 // `window === globalThis` under vitest globals, so this cannot be a getter
 // deferring to `window.localStorage` -- that recurses into itself.
 const storageWindow = new (await import('happy-dom')).Window();

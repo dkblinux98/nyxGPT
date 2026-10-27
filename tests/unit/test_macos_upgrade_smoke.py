@@ -18,6 +18,7 @@ at runtime too -- this is the earlier, cheaper copy of the same check).
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,7 +77,16 @@ def test_the_remediation_grepped_for_is_the_one_ops_prints(script):
 
 def test_the_mismatch_word_grepped_for_is_the_one_status_prints(script, capsys):
     """AC3 is asserted by grepping `ops status` for MISMATCH, so the printer
-    has to emit exactly that token."""
+    has to emit exactly that token -- inside the block that names this subject.
+
+    The scoping is the point, not an implementation detail. `MISMATCH` is the
+    word EVERY `ops status` subject uses for its own verdict, and since #4194
+    the same output carries `Node runtime (web tier): MISMATCH ...` on any host
+    whose `node` is not the declared major -- which a macOS runner's routinely
+    is. A whole-transcript `grep` read that as this subject's verdict and
+    reddened the injection half of the fault-injected check (run 39679510191)
+    while the injected comparison was reporting a match exactly as intended.
+    """
     ops._print_running_api_build(
         ops.BuildDrift(
             state=BUILD_MISMATCH,
@@ -89,10 +99,110 @@ def test_the_mismatch_word_grepped_for_is_the_one_status_prints(script, capsys):
     )
     printed = capsys.readouterr().out
     assert "MISMATCH" in printed
-    assert "grep -q 'MISMATCH'" in script
-    # And the block header the script `sed`s out of the transcript for the log.
+    # The block header this subject's verdict is printed under, and the only
+    # thing the script reads `MISMATCH` out of.
     assert "Running api build" in printed
-    assert "/Running api build/" in script
+    assert "/^Running api build/" in script
+    assert "grep -q 'MISMATCH' <<<\"$block\"" in script
+    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "grep -q 'MISMATCH' \"$WORK" not in body, (
+        "a reader greps the whole `ops status` transcript for MISMATCH; it would "
+        "report another subject's verdict as the api build's"
+    )
+    assert body.count("api_build_says_mismatch") >= 3, (
+        "both MISMATCH readers must go through the one subject-scoped helper "
+        "(its definition plus the two call sites)"
+    )
+
+
+def _api_match_then_node_mismatch(capsys, *, squeezed: bool) -> str:
+    """What `ops status` prints for a matching api build followed by a Node of
+    the wrong major -- the state a macOS runner reaches on its own."""
+    from nyxgpt import node_runtime
+
+    capsys.readouterr()
+    ops._print_running_api_build(
+        ops.BuildDrift(
+            state=ops.BUILD_MATCH,
+            running=None,
+            expected_prefix="/new/venv",
+            expected_source="the keg",
+            detail="d",
+            remediation="",
+        )
+    )
+    wrong_major = node_runtime.NodeRuntimeReport(
+        state=node_runtime.NODE_MISMATCH,
+        path="/opt/homebrew/bin/node",
+        version="v22.23.2",
+        major=22,
+        declared_major=node_runtime.NODE_MAJOR,
+        detail="wrong major",
+        remediation=node_runtime.NODE_REMEDIATION_COMMAND,
+    )
+    with patch.object(node_runtime, "node_version_report", return_value=wrong_major):
+        ops._print_node_runtime()
+    printed = capsys.readouterr().out
+    if squeezed:
+        printed = "\n".join(line for line in printed.splitlines() if line.strip()) + "\n"
+    return printed
+
+
+def test_the_node_runtime_line_is_its_own_section(capsys):
+    """The producer half: `Node runtime` opens with a blank line, as every
+    other `ops status` section header does, so an operator does not read its
+    verdict as the api build's either."""
+    printed = _api_match_then_node_mismatch(capsys, squeezed=False)
+    assert "\n\nNode runtime (web tier): MISMATCH" in printed, printed
+
+
+@pytest.mark.parametrize("squeezed", [False, True], ids=["as-printed", "no-blank-lines"])
+def test_another_subjects_mismatch_is_not_read_as_the_api_builds(
+    script, tmp_path, capsys, squeezed
+):
+    """Executed, in both directions: the real helper against a real transcript.
+
+    A `node` of the wrong major and an api build that matches is a state a
+    macOS runner reaches on its own, so the transcript below is the one the
+    injection half actually sees. The retired whole-file `grep` is run beside
+    the shipped helper to show the difference is the fix and not the fixture.
+
+    The transcript comes from the two real printers, called in the order
+    `status` calls them -- never from hand-typed separators. The first version
+    of this test wrote the blank line before `Node runtime` itself, which the
+    printer did not emit; it passed here while run 40090506617 failed live on
+    exactly that difference. The `squeezed` case removes every blank line, so
+    the reader is also proven not to depend on the printer's spacing.
+    """
+    transcript = tmp_path / "status.log"
+    transcript.write_text(
+        _api_match_then_node_mismatch(capsys, squeezed=squeezed), encoding="utf-8"
+    )
+
+    helper = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            f'source <(sed -n "/^api_build_block()/,/^}}/p;/^api_build_says_mismatch()/,/^}}/p" '
+            f'"{SCRIPT}")\n'
+            f'api_build_says_mismatch "{transcript}"',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert helper.returncode == 1, (
+        "the subject-scoped reader saw a mismatch in a transcript whose api build "
+        f"matched: {helper.stdout}{helper.stderr}"
+    )
+
+    retired = subprocess.run(
+        ["bash", "-c", f'grep -q "MISMATCH" "{transcript}"'], capture_output=True, text=True
+    )
+    assert retired.returncode == 0, (
+        "the retired whole-file grep did NOT fire on this transcript, so this test "
+        "is not measuring the defect it exists for"
+    )
 
 
 def test_the_script_never_asserts_from_a_checkout(script):

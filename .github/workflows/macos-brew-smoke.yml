@@ -1622,6 +1622,149 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "good: the web keg reports its own version ($VERSION) beside the API's ($UPSTREAM)"
 
+      - name: "The web keg runs the DECLARED Node, and `brew upgrade node` cannot move it (#4194)"
+        # nyxGPT never declared a Node version, so macOS -- the one platform
+        # with no pin at all -- ran whatever Homebrew's unversioned `node` was
+        # that week (26.11 on the owner's machine, while CI, the container and
+        # the Linux installs were all on 20). The formula now depends on the
+        # versioned `node@NN` keg and prepends THAT keg's bin.
+        #
+        # Inspection cannot settle this. `depends_on "node@24"` being in the
+        # file says nothing about which `node` a launched service resolves, and
+        # the whole defect is that the resolution happened at run time off
+        # `PATH`. So this runs the wrapper the service runs, with a WRONG-major
+        # `node` deliberately placed first on `PATH` -- the `brew upgrade node`
+        # condition, injected (#3753's pattern) -- and requires the keg's own
+        # Node to win anyway.
+        #
+        # Then the other half: the same wrong major, pointed at through
+        # `NYXGPT_NODE_BIN`, must be REPORTED by `ops doctor` and `ops node`.
+        # A pin nothing checks is how this went unnoticed for the life of the
+        # project, so both the pinning and the detection are executed here.
+        #
+        # Gated on the job's `WEB_KEG_INSTALLED`, not on a restatement of
+        # `inputs.include_web`: that condition lives once (#4192 review round
+        # 2, ledger D-066), and a second copy here is the divergence the flag
+        # was introduced to remove.
+        if: ${{ env.WEB_KEG_INSTALLED == 'true' }}
+        run: |
+          set -euo pipefail
+
+          DECLARED="$(tr -d '[:space:]' < .nvmrc)"
+          echo "declared Node major: $DECLARED"
+          KEG_PREFIX="$(brew --prefix nyxgpt-web@3.0.0rc)"
+
+          # --- 1. the dependency is the versioned keg, not the floating one ---
+          deps="$(brew deps nyxgpt-web@3.0.0rc)"
+          echo "--- brew deps ---"; echo "$deps"
+          if ! grep -qx "node@${DECLARED}" <<<"$deps"; then
+            echo "::error::nyxgpt-web does not depend on node@${DECLARED}; a macOS install would take whatever major Homebrew's unversioned node is today"
+            exit 1
+          fi
+          if grep -qx "node" <<<"$deps"; then
+            echo "::error::nyxgpt-web still depends on the UNVERSIONED node formula, which any major satisfies"
+            exit 1
+          fi
+          NODE_KEG_BIN="$(brew --prefix "node@${DECLARED}")/bin"
+          "$NODE_KEG_BIN/node" -v
+
+          # --- 2. inject the wrong major FIRST on PATH, and require the keg to win ---
+          SHIM="$RUNNER_TEMP/wrong-node/bin"
+          mkdir -p "$SHIM"
+          # A real executable, not a stub that only answers `-v`: if the keg's
+          # prepend were missing, `npm run start` would exec THIS and fail in a
+          # way the assertion below would see as "not the declared node".
+          # The version it claims is DERIVED from the declaration, so the
+          # fault stays a wrong major whatever the declared one becomes. (A
+          # bare `vX.Y.Z` literal is also what
+          # tests/unit/test_no_hardcoded_release_version.py reads as a pinned
+          # nyxGPT release line -- rightly, the patterns are identical.)
+          WRONG_MAJOR="$((DECLARED - 2))"
+          {
+            echo '#!/bin/bash'
+            echo "if [ \"\${1:-}\" = \"-v\" ]; then echo \"v${WRONG_MAJOR}.0.0\"; exit 0; fi"
+            echo 'echo "wrong-major node shim invoked: $*" >&2'
+            echo 'exit 70'
+          } > "$SHIM/node"
+          chmod 0755 "$SHIM/node"
+          "$SHIM/node" -v
+
+          WEB_HOME="$RUNNER_TEMP/nodehome"
+          mkdir -p "$WEB_HOME/.nyxGPT"
+          printf '[web]\nhost = 127.0.0.1\nport = 3121\n' > "$WEB_HOME/.nyxGPT/config.ini"
+
+          HOME="$WEB_HOME" PATH="$SHIM:$PATH" \
+            /bin/bash "$KEG_PREFIX/bin/nyxgpt-web" > "$RUNNER_TEMP/web-node.log" 2>&1 &
+          WEB_PID=$!
+          cleanup() {
+            kill "$WEB_PID" 2>/dev/null || true
+            pkill -f 'next-server' 2>/dev/null || true
+            pkill -f 'next start' 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          code="000"
+          for _ in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1:3121/ || true)"
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          echo "--- keg server log ---"; cat "$RUNNER_TEMP/web-node.log" || true
+          echo "--- GET / -> $code ---"
+
+          # The wrapper logs the `node` it resolved (#4194); that line IS the
+          # evidence this step exists to produce, so it is printed above and
+          # asserted here.
+          # No pipe into an early-leaving reader: `sed | head -1` is the
+          # `pipefail`/EPIPE hazard #4192 swept out of this workflow, and
+          # `tests/unit/test_sigpipe_pipeline_guard.py` fails the build on it.
+          # `sed` reads the file directly and the shell takes the first line.
+          RESOLVED="$(sed -n 's/^  node: //p' "$RUNNER_TEMP/web-node.log")"
+          RESOLVED="${RESOLVED%%$'\n'*}"
+          echo "the service resolved: ${RESOLVED:-<nothing>}"
+          fail=0
+          if [ "$code" != "200" ]; then
+            echo "::error::the web keg did not serve with a wrong-major node first on PATH -- the formula's keg prepend is not winning"
+            fail=1
+          fi
+          case "$RESOLVED" in
+            "$NODE_KEG_BIN/node v${DECLARED}."*) : ;;
+            *)
+              echo "::error::the service resolved '$RESOLVED', not the node@${DECLARED} keg -- this is #4194's defect: brew upgrade node would change what nyxGPT runs"
+              fail=1
+              ;;
+          esac
+          [ "$fail" -eq 0 ] || exit 1
+          cleanup
+          trap - EXIT
+
+          # --- 3. the detection half: a wrong major must be REPORTED ---
+          echo "--- ops node / ops doctor against the injected wrong major ---"
+          NYXGPT_NODE_BIN="$SHIM/node" nyxgpt ops node > "$RUNNER_TEMP/ops-node.log" 2>&1 || true
+          cat "$RUNNER_TEMP/ops-node.log"
+          grep -q "not the Node ${DECLARED} nyxGPT declares" "$RUNNER_TEMP/ops-node.log" || {
+            echo "::error::nyxgpt ops node did not report the injected wrong major"
+            exit 1
+          }
+
+          NYXGPT_NODE_BIN="$SHIM/node" nyxgpt ops doctor > "$RUNNER_TEMP/ops-doctor.log" 2>&1 || true
+          grep -n "is not the Node ${DECLARED}" "$RUNNER_TEMP/ops-doctor.log" || true
+          grep -q "nyxgpt ops node" "$RUNNER_TEMP/ops-doctor.log" || {
+            echo "::error::nyxgpt ops doctor did not report the wrong Node major, or did not name the wrapped remedy"
+            exit 1
+          }
+
+          # And the inverse, so this cannot pass by `doctor` complaining about
+          # Node unconditionally: with the declared keg, no Node finding.
+          NYXGPT_NODE_BIN="$NODE_KEG_BIN/node" nyxgpt ops status \
+            > "$RUNNER_TEMP/ops-status.log" 2>&1
+          grep "Node runtime (web tier)" "$RUNNER_TEMP/ops-status.log"
+          grep -q "Node runtime (web tier): v${DECLARED}\." "$RUNNER_TEMP/ops-status.log" || {
+            echo "::error::nyxgpt ops status did not report the declared Node as correct"
+            exit 1
+          }
+          echo "good: the keg pins Node ${DECLARED}, a wrong major on PATH cannot displace it, and both are reported"
+
       - name: "Both service wrappers are runnable scripts, not 0444 text files (#4043)"
         # The wrappers were written by a Ruby `<<~` heredoc containing a nested
         # `<<'PY'` body, which has to start at column 0 -- so `<<~` stripped

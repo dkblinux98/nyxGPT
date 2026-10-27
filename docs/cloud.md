@@ -81,9 +81,11 @@ front, or `--yes` to take the defaults without being asked. Then it:
 3. **Provisions the instance from published artifacts** — installs the OS
    packages, a Python that satisfies nyxGPT's `requires-python` (the AMI's
    own `python3` is not assumed to: Amazon Linux 2023's is 3.9, below the
-   floor — see [Python on the instance](#python-on-the-instance)), Node 20
-   (from NodeSource, the toolchain `ops install` builds and
-   runs the web bundle with), the Docker engine, Ollama, and a **published**
+   floor — see [Python on the instance](#python-on-the-instance)), the
+   Node major nyxGPT declares (from NodeSource — see
+   [The Node.js version](#the-nodejs-version); it is the toolchain
+   `ops install` builds and runs the web bundle with), the Docker engine,
+   Ollama, and a **published**
    `nyxgpt` release (or, under
    [`--dev`](#dev-mode-on-a-cloud-target), your working tree), then runs
    `nyxgpt ops install` on the box **exactly
@@ -1049,7 +1051,7 @@ What it does, in the order the deploy reports it:
 3. **Installs it editable** (`pip install -e ~/.nyxGPT/src`) instead of
    `pip install nyxgpt==<version>`, and runs `nyxgpt ops install --dev` on the
    box. Everything else about the deploy is identical — same bootstrap, same
-   Node 20, same Docker, same session backend, same self-heal enable.
+   declared Node, same Docker, same session backend, same self-heal enable.
 
 Things worth knowing before you use it:
 
@@ -1113,6 +1115,35 @@ Before that, the venv was built with bare `python3`, so on Amazon Linux 2023
 (`requires a different Python: 3.9.16 not in '>=3.11'`) minutes into a
 deploy. What that failure looks like now, and what to do about it, is in
 [troubleshooting.md](troubleshooting.md#no-python--311-available-to-create-the-nyxgpt-api-venv).
+
+### The Node.js version
+
+nyxGPT declares **one** Node.js major, in `.nvmrc` and
+`src/nyxgpt/node_runtime.py`, and every surface that installs, tests or runs
+Node takes it from there — CI's `setup-node` steps, `web/Dockerfile`, the
+Homebrew keg, and the two Linux bootstraps on this page. See
+[Node.js version](ops.md#the-declared-nodejs-version) for the declaration
+itself and the `nyxgpt ops node` command.
+
+On an instance:
+
+- **Provisioning** adds NodeSource's repo for the declared major and installs
+  `nodejs` from it, because the distro packages are older (Ubuntu 22.04 ships
+  Node 12, AL2023 ships Node 18). Where NodeSource has no repo for the
+  release, it falls back to the distro's own packages and then *verifies* —
+  stopping with `node/npm could not be installed` rather than failing later
+  inside the web build.
+- **A wrong major is replaced, not accepted.** The check is `-ne`, not `-lt`:
+  an instance that already carries a newer Node is not left on it. A newer
+  major is not a newer version of what was tested; it is an untested one.
+- **`nyxgpt ops doctor` and `ops status` on the instance report the version**
+  the web tier actually resolves, and name `nyxgpt ops node` as the repair.
+  The SRE dashboard's Infrastructure page shows the same value.
+
+Before #4194 the major was a literal `20` in this bootstrap, a second literal
+`20` in the deploy's own copy of it, a third in `web/Dockerfile` and a fourth
+in seven workflows, with nothing holding any of them equal — and macOS pinned
+nothing at all.
 
 ### Docker on the instance
 
@@ -1987,7 +2018,8 @@ services start, so no instance ever needs a hand-edited `config.ini`. See
    Amazon Linux 2023 and 3.10 on Ubuntu 22.04, and the CLI venv is built from
    the resolved interpreter, never from a `python3` assumed new enough (see
    [Python on the instance](#python-on-the-instance)) — a Docker engine
-   (`docker`/`docker.io`), and Node 20 from NodeSource. All three are
+   (`docker`/`docker.io`), and the declared Node from NodeSource
+   ([The Node.js version](#the-nodejs-version)). All three are
    required by `nyxgpt ops install` and none ship on a stock AL2023 or
    Canonical Ubuntu AMI: it builds a Python venv for the API, runs `npm
    ci`/`npm run build` for the web bundle, and creates the

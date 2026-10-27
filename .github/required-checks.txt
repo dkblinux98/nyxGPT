@@ -170,14 +170,6 @@ dispatch-run-block-is-inert
 session-shell-behaves
 session-structure-holds
 native-edges-only
-# image-build-fetch-policy-smoke.yml (#4205). Required. It is the executed
-# evidence that a build which cannot reach the package registry fails loudly
-# and is attributed to the registry -- and the only job here that builds with
-# the network OFF. Every other image-building smoke builds with it on, which
-# is why `npm ci` exiting 0 over an empty node_modules went unnoticed: those
-# jobs are green by luck on this path. A red one means either the silent
-# failure is back or the attribution broke, and both are the defect.
-image-build-fetch-policy-smoke
 # glitchtip-worker-smoke.yml (#4208). Required. It is the executed evidence
 # that `glitchtip-worker` is Ready only while its consumer consumes, and it is
 # fault-injected in both directions: the run FAILS unless the start-up wedge
