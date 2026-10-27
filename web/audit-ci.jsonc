@@ -102,14 +102,11 @@
   //                        @sentry/nextjs -> 10.76.2, zod -> 4.6.7. Lockfile
   //                        only, no package.json edit, no major moves.
   //
-  // The two allowlist entries below are left in place but no longer match:
-  // after that update `npm audit` stops reporting GHSA-vfj7-8cjw-p6xm on
-  // either path (braces is still 3.0.3 -- the latest ever published -- under
-  // @ducanh2912/next-pwa, and the eslint-config-next path to it is gone), so
-  // audit-ci prints "Consider not allowlisting paths". That warning is not a
-  // failure, and the entries stay until the REVISIT condition below is
-  // actually met: they are path-scoped triage, and dropping them on a
-  // quiet week would silently re-arm the gate on paths nobody re-read.
+  // The two braces allowlist entries stopped matching at that point and were
+  // left in place, on the reading that the REVISIT condition below had not
+  // been met. They were removed on 2026-10-27 (#4239) once the actual cause
+  // was established, and the diagnosis is the part worth keeping -- see
+  // "THE BRACES ENTRIES ARE GONE" below.
   //
   // Note which branch of this file's own advice applied: the recurrence was
   // read as "check `npm audit` before looking for a culprit in the branch",
@@ -216,12 +213,50 @@
   // `npx npm@11 install --package-lock-only` resolves it correctly; verify
   // the result with `npm ci` on npm 10, which is what CI runs.
   //
-  // REVISIT: drop both entries as soon as braces publishes a fixed release
-  // (watch the advisory's `first_patched_version`), or when next-pwa and
-  // eslint-config-next move off the fast-glob/micromatch chain. Neither entry
-  // is a standing acceptance of the advisory.
-  "allowlist": [
-    "GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces",
-    "GHSA-vfj7-8cjw-p6xm|eslint-config-next>@next/eslint-plugin-next>fast-glob>micromatch>braces"
-  ]
+  // THE BRACES ENTRIES ARE GONE, and NEITHER of their REVISIT conditions is
+  // why (2026-10-27, #4239). GHSA-vfj7-8cjw-p6xm was WITHDRAWN:
+  //
+  //   GET /advisories/GHSA-vfj7-8cjw-p6xm
+  //                       `"withdrawn_at": "2026-10-23T12:53:02Z"`, summary
+  //                       now prefixed "Withdrawn Advisory:", reason given as
+  //                       "not a practically exploitable vulnerability". The
+  //                       GHSA, its CVE (CVE-2026-93687) and the `<= 3.0.3`
+  //                       range are all still published -- withdrawn is not
+  //                       deleted -- but npm's audit endpoint stops serving a
+  //                       withdrawn advisory, so `npm audit` reports 0
+  //                       findings at EVERY severity.
+  //   npm view braces     still 3.0.3, still the only version ever published.
+  //                       The first REVISIT condition ("braces publishes a
+  //                       fixed release") was never met and now never will be.
+  //   npm ls fast-glob --all
+  //                       BOTH paths still exist and still reach braces@3.0.3
+  //                       (@ducanh2912/next-pwa -> fast-glob@3.3.2, and
+  //                       eslint-config-next@16.3.0 ->
+  //                       @next/eslint-plugin-next@16.3.0 -> fast-glob@3.3.1).
+  //                       So the second condition ("the parents move off the
+  //                       fast-glob/micromatch chain") was not met either, and
+  //                       the 2026-10-23 note above was WRONG to read the
+  //                       eslint-config-next path as gone -- it is not, it was
+  //                       only deduped out of a plain `npm ls braces`.
+  //
+  // The triage those entries carried (the DoS needs an attacker-controlled
+  // glob pattern; on both paths the patterns are authored in this repository
+  // and consumed at build/lint time) is preserved above and was never the
+  // problem. What the entries lost is their SUBJECT: with the advisory
+  // withdrawn there is no finding to accept on any path, triaged or not, so
+  // the path-scoping that kept the gate red for a third path was protecting
+  // against nothing. That is why they go rather than stay.
+  //
+  // The REVISIT condition was the real defect: it watched the two ways the
+  // advisory could be FIXED and not the way it actually went quiet, so the
+  // entries died without tripping anything. `npm run audit:ci` now routes
+  // through `scripts/ci/stale_suppressions.py`, which turns audit-ci's
+  // "Consider not allowlisting ..." warning into a build FAILURE -- the one
+  // report that was already being printed on every green run here for four
+  // days. Write a REVISIT condition for the next entry anyway, but do not
+  // rely on it: the gate is what notices.
+  //
+  // Keeping `allowlist` empty is not an assertion that `npm audit` is quiet
+  // -- see the top of this file, and expect the recurrence.
+  "allowlist": []
 }

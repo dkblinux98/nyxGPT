@@ -36,17 +36,16 @@ jobs:
         if: always()
         run: bandit -c pyproject.toml -r src/ -f txt || true
 
-      - name: Python dependency audit (pip-audit)
-        run: |
-          set -euo pipefail
-          IGNORE_ARGS=()
-          while IFS= read -r line; do
-            id="${line%%#*}"
-            id="$(echo "$id" | xargs)"
-            [ -z "$id" ] && continue
-            IGNORE_ARGS+=(--ignore-vuln "$id")
-          done < security/pip-audit-ignore.txt
-          pip-audit "${IGNORE_ARGS[@]}"
+      # Fails on any finding security/pip-audit-ignore.txt does not accept --
+      # unchanged -- and ALSO on any entry in that file which accepts nothing
+      # (#4239). `--ignore-vuln` silently tolerates an ID that matches no
+      # finding, so the inline loop this step used to run could not tell a
+      # live suppression from a dead one; the gate derives both from one
+      # unfiltered pip-audit report instead. Same rule, same message and same
+      # exit code as the npm allowlist gate below, which is why they share a
+      # module.
+      - name: Python dependency audit (pip-audit) -- blocking, dead ignores included
+        run: python3 scripts/ci/stale_suppressions.py pip-audit
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -56,5 +55,9 @@ jobs:
       - name: Install web dependencies
         run: cd web && npm ci
 
+      # `audit:ci` routes through scripts/ci/stale_suppressions.py, so this
+      # blocks on high/critical findings AND on an allowlist entry that
+      # matches nothing. The command is deliberately the same one the
+      # developer runbook tells a human to run locally.
       - name: npm dependency audit (audit-ci) -- blocking on high/critical
         run: cd web && npm run audit:ci
