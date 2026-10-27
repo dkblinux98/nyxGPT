@@ -61,3 +61,59 @@ jobs:
       # developer runbook tells a human to run locally.
       - name: npm dependency audit (audit-ci) -- blocking on high/critical
         run: cd web && npm run audit:ci
+
+      # FAULT INJECTION (#4239, following macos-brew-smoke.yml's template).
+      # Every step above passes on a clean tree whether or not the
+      # stale-suppression gate works -- which is exactly how the defect
+      # survived: audit-ci printed "Consider not allowlisting paths" on four
+      # consecutive GREEN runs. So re-arm the defect and require the gate to
+      # fail on it, by its own message rather than by any non-zero exit (a
+      # real finding would also exit non-zero and would prove nothing about
+      # the stale-entry path).
+      #
+      # The injected allowlist entry is #4239's own: a path-scoped entry for
+      # the withdrawn GHSA-vfj7-8cjw-p6xm, which matches nothing while both
+      # dependency paths still exist.
+      - name: Prove the stale-suppression gate fails on a dead entry
+        run: |
+          set -euo pipefail
+          cp web/audit-ci.jsonc /tmp/audit-ci.jsonc.orig
+          cp security/pip-audit-ignore.txt /tmp/pip-audit-ignore.txt.orig
+          restore() {
+            cp /tmp/audit-ci.jsonc.orig web/audit-ci.jsonc
+            cp /tmp/pip-audit-ignore.txt.orig security/pip-audit-ignore.txt
+          }
+          trap restore EXIT
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          config = Path("web/audit-ci.jsonc")
+          dead = "GHSA-vfj7-8cjw-p6xm|@ducanh2912/next-pwa>fast-glob>micromatch>braces"
+          text = config.read_text()
+          assert '"allowlist": []' in text, "expected an empty allowlist to inject into"
+          config.write_text(text.replace('"allowlist": []', f'"allowlist": ["{dead}"]'))
+          PY
+
+          (cd web && npm run --silent audit:ci) >/tmp/npm-gate.log 2>&1 && status=0 || status=$?
+          if [ "$status" -eq 0 ] || ! grep -q "STALE SUPPRESSION" /tmp/npm-gate.log; then
+            cat /tmp/npm-gate.log
+            echo "::error::the npm half of the stale-suppression gate did not fail on a \
+          dead allowlist entry (exit $status). web/package.json's audit:ci must route \
+          through scripts/ci/stale_suppressions.py."
+            exit 1
+          fi
+          echo "npm half: failed as required (exit $status)"
+          restore
+
+          printf '\n# fault injection -- #4239, removed by the trap\nGHSA-0000-dead-0000\n' \
+            >> security/pip-audit-ignore.txt
+          python3 scripts/ci/stale_suppressions.py pip-audit >/tmp/pip-gate.log 2>&1 \
+            && status=0 || status=$?
+          if [ "$status" -eq 0 ] || ! grep -q "STALE SUPPRESSION" /tmp/pip-gate.log; then
+            cat /tmp/pip-gate.log
+            echo "::error::the pip-audit half of the stale-suppression gate did not fail \
+          on a dead ignore entry (exit $status)."
+            exit 1
+          fi
+          echo "pip-audit half: failed as required (exit $status)"

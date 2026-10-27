@@ -354,6 +354,29 @@ def test_the_security_scan_workflow_uses_both_halves_of_the_gate() -> None:
     )
 
 
+def test_the_workflow_still_proves_the_gate_has_teeth() -> None:
+    """The fault-injection step is part of the gate, not decoration (#3753).
+
+    Every other step in `security-scan.yml` passes on a clean tree whether
+    or not this gate works -- which is precisely how #4239 survived four
+    green runs. The injection step re-arms the defect and requires the gate
+    to fail on it *by its own message*, so deleting the step would restore
+    a scan that cannot distinguish a working gate from an absent one.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "security-scan.yml").read_text()
+
+    assert "Prove the stale-suppression gate fails on a dead entry" in workflow, (
+        "security-scan.yml no longer injects a dead suppression entry, so "
+        "nothing in CI distinguishes a working stale-suppression gate from an "
+        "absent one (#4239). Restore the fault-injection step."
+    )
+    assert workflow.count("STALE SUPPRESSION") >= 2, (
+        "the fault-injection step must assert the gate's own message for BOTH "
+        "halves -- a bare non-zero exit would also be produced by a real "
+        "finding and proves nothing about the stale-entry path."
+    )
+
+
 def test_the_gate_offers_exactly_the_two_registers_it_wires() -> None:
     """A third scanner must wire its own step, not ride on a silent default."""
     with pytest.raises(SystemExit):
