@@ -55,15 +55,23 @@ those per route is exactly how #3178 (web UI couldn't reach or authenticate
 to the API) happened.
 
 **Exception:** `web/src/app/api/chat/stream/route.ts` does not use `apiFetch()`.
-Next 16 bundles its own (newer-major) `undici` for global `fetch`, and handing
-that fetch a dispatcher/Agent built from the `undici` version pinned in
-`web/package.json` breaks with `UND_ERR_INVALID_ARG` (#3440) — the two undici
-majors disagree on the dispatch-handler interface. That route instead calls
-the pinned `undici` package's own `request()` directly (still resolving the
-base URL via `apiUrl()` and attaching auth via `attachApiKey()`, both from
-`@/lib/apiProxy`), so its HTTP client and its options come from the same
-undici major regardless of what Next/Node bundle for global fetch. Do not
+Global `fetch` is backed by an undici this repo does not choose — the Node
+runtime embeds one (`process.versions.undici`) and Next bundles its own on
+some paths — and handing that fetch a dispatcher/Agent built from the
+`undici` in `web/package.json` breaks with `UND_ERR_INVALID_ARG` (#3440),
+because the two undici majors disagree on the dispatch-handler interface.
+That route instead calls the `undici` package's own `request()` directly
+(still resolving the base URL via `apiUrl()` and attaching auth via
+`attachApiKey()`, both from `@/lib/apiProxy`), so its HTTP client and its
+options come from the same undici major whatever the runtime embeds. Do not
 "fix" it back to `apiFetch()`/`fetch()` with a custom dispatcher.
+
+Which of the two majors is newer is not the point, and it has flipped at
+least once: #3440 was a v6 Agent rejected by a v7-backed fetch, while since
+#4238 the package is undici 8 and the embedded one is older. The mismatch is
+the defect in either direction.
+`web/tests/app/api/no-foreign-fetch-dispatcher.test.ts` fails the build if a
+`dispatcher:` option reappears anywhere under `web/src`.
 
 ```typescript
 import { apiFetch } from "@/lib/apiProxy";

@@ -173,6 +173,16 @@ REMEDIATIONS: tuple[Remediation, ...] = (
         # Proxy-Authorization header leak on cross-origin redirect. HIGH,
         # <6.29.1 (with GHSA-4qv8-2p9j-2685, moderate, alongside it).
         # Dependabot alerts 174/173. (#4221)
+        #
+        # The declared range is `^8.12.3` since #4238, so this floor is a
+        # whole major below what the manifest now accepts and the layer-1
+        # check passes with room to spare. It is kept, not raised: the
+        # number records WHERE THE ADVISORY ENDS, which is a fact about
+        # GHSA-xjj6-f33q-929c and does not move when we move. Raising it to
+        # track the current pin would quietly turn this registry into a
+        # second copy of `package.json` -- and the next time the range has
+        # to come DOWN (an undici 8 regression, say), the floor would read
+        # as though 8.x were the advisory's boundary.
         "GHSA-xjj6-f33q-929c",
         True,
         "dependencies",
@@ -199,6 +209,12 @@ REMEDIATIONS: tuple[Remediation, ...] = (
         # alerts 157/156, both fixed in 4.1.12). @vitest/ui and
         # @vitest/coverage-v8 peer-depend on vitest by exact version too,
         # so all three move together. (#4221)
+        #
+        # All three are `^5.0.5` since #4238; the floor stays at the
+        # advisory's boundary for the same reason recorded on `undici`
+        # above. The exact-version coupling is unchanged in vitest 5, so
+        # the mechanism this entry describes still holds -- it is the
+        # reason `@vitest/mocker` below has no manifest floor of its own.
         "GHSA-qxg6-89mg-rqv8",
         True,
         "devDependencies (pins @vitest/mocker by exact version)",

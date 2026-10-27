@@ -47,8 +47,24 @@ vi.mock('next/font/google', () => ({
 // ─── Import page.tsx once to trigger module-level dynamic() calls ─────────────
 // Must happen after the vi.mock declarations above so the mock is in place
 // when page.tsx executes `const ChatPane = dynamic(...)`.
+//
+// The calls are SNAPSHOTTED here rather than read from `mockedDynamic.mock`
+// inside each test (#4238). vitest 5 flipped `clearMocks` to default `true`,
+// so every spy's call history is wiped before each test — and this file's
+// subject is recorded exactly once, at module-evaluation time in this hook,
+// which runs before that wipe. Reading the live mock made three of these
+// tests assert against an emptied array, and the fourth (`forEach` over the
+// calls) pass vacuously, which is the worse half of the failure. Holding our
+// own copy also states the real dependency: these tests are about what
+// page.tsx did when it was imported, not about anything the test itself calls.
+let dynamicCalls: [unknown, unknown][] = [];
+
 beforeAll(async () => {
   await import('../src/app/page');
+  // `.slice()`, not the live array: whether `mockClear()` reassigns `.calls`
+  // or empties it in place is vitest's business, and a copy is correct either
+  // way.
+  dynamicCalls = vi.mocked(nextDynamic).mock.calls.slice() as unknown as [unknown, unknown][];
 });
 
 // ─── Suite 1: Loading fallbacks ───────────────────────────────────────────────
@@ -58,19 +74,19 @@ beforeAll(async () => {
 
 describe('Code Splitting – loading fallbacks', () => {
   it('page.tsx calls next/dynamic at least twice (ChatPane + VirtualizedSessionList)', () => {
-    const mockedDynamic = vi.mocked(nextDynamic);
-    expect(mockedDynamic).toHaveBeenCalled();
-    expect(mockedDynamic.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(dynamicCalls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('every dynamic() call in page.tsx includes a loading fallback function', () => {
-    const mockedDynamic = vi.mocked(nextDynamic);
-    const calls = mockedDynamic.mock.calls;
+    // An empty `calls` array would make this `forEach` pass while asserting
+    // nothing, so the count is checked first rather than left to the test
+    // above (#4238).
+    expect(dynamicCalls.length).toBeGreaterThanOrEqual(2);
 
     // All dynamic() calls must supply a loading option – this test fails if the
     // loading: () => <LoadingSpinner /> or loading: () => <SessionListSkeleton />
     // lines are removed from page.tsx.
-    calls.forEach((call, index) => {
+    dynamicCalls.forEach((call, index) => {
       const options = call[1] as { loading?: unknown };
       expect(
         typeof options?.loading,
@@ -80,11 +96,9 @@ describe('Code Splitting – loading fallbacks', () => {
   });
 
   it('ChatPane loading fallback returns a renderable React element', () => {
-    const mockedDynamic = vi.mocked(nextDynamic);
-
     // ChatPane is the first dynamic() call; it wraps a <LoadingSpinner />
     // inside a flex container.
-    const firstCall = mockedDynamic.mock.calls[0];
+    const firstCall = dynamicCalls[0];
     expect(firstCall).toBeDefined();
 
     const options = firstCall[1] as { ssr?: boolean; loading?: () => React.ReactNode };
@@ -97,11 +111,9 @@ describe('Code Splitting – loading fallbacks', () => {
   });
 
   it('VirtualizedSessionList loading fallback returns a renderable React element', () => {
-    const mockedDynamic = vi.mocked(nextDynamic);
-
     // VirtualizedSessionList is the second dynamic() call; it uses
     // loading: () => <SessionListSkeleton />.
-    const secondCall = mockedDynamic.mock.calls[1];
+    const secondCall = dynamicCalls[1];
     expect(secondCall).toBeDefined();
 
     const options = secondCall[1] as { ssr?: boolean; loading?: () => React.ReactNode };

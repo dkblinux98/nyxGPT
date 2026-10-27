@@ -1,10 +1,17 @@
 /**
  * Regression test for #3440: a `dispatcher` built from the `undici` version
- * pinned in package.json must never be handed to Next's built-in `fetch`.
- * Next 16 bundles its own (newer-major) undici for global fetch, and a
- * foreign-major Agent's dispatch-handler interface is not guaranteed
- * compatible with it — that mismatch is exactly what made every chat
- * request 502 instantly (`UND_ERR_INVALID_ARG`).
+ * in package.json must never be handed to the runtime's built-in `fetch`.
+ * Global fetch is backed by an undici this repo does not choose — the Node
+ * runtime embeds one (`process.versions.undici`), Next bundles its own on
+ * some paths — and a foreign-major Agent's dispatch-handler interface is
+ * not guaranteed compatible with it. That mismatch is exactly what made
+ * every chat request 502 instantly (`UND_ERR_INVALID_ARG`).
+ *
+ * The direction of the mismatch is irrelevant and has already flipped: in
+ * #3440 the dependency was the OLDER major (v6 Agent, v7-backed fetch);
+ * since #4238 it is the newer one (undici 8, Node 24 embeds 7). This test
+ * is written against the coupling, not against either version, so it keeps
+ * holding across both.
  *
  * chat/stream/route.ts sidesteps the problem by driving the upstream call
  * through undici's own request() instead of fetch(), so it has no reason to
